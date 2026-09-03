@@ -614,7 +614,11 @@ func (a *App) storeParsedCallEvent(ctx context.Context, call wa.ParsedCallEvent,
 		return fmt.Errorf("call chat JID is required")
 	}
 	if chatName == "" {
-		chatName = a.wa.ResolveChatName(ctx, call.Chat, "")
+		if a.wa != nil {
+			chatName = a.wa.ResolveChatName(ctx, call.Chat, "")
+		} else {
+			chatName = chatJID
+		}
 	}
 	if err := a.db.UpsertChat(chatJID, chatKind(call.Chat), chatName, call.Timestamp); err != nil {
 		return err
@@ -625,7 +629,7 @@ func (a *App) storeParsedCallEvent(ctx context.Context, call wa.ParsedCallEvent,
 		if jid, err := types.ParseJID(senderJID); err == nil {
 			contactJID := a.canonicalStoreJID(ctx, jid)
 			senderJID = contactJID.String()
-			if senderName == "" {
+			if senderName == "" && a.wa != nil {
 				if info, err := a.wa.GetContact(ctx, contactJID); err == nil {
 					senderName = wa.BestContactName(info)
 				}

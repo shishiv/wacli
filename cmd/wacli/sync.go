@@ -109,9 +109,12 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 					}
 					stopSendDelegate = stop
 					if a.Events().Enabled() {
-						linkedJID := "mock@s.whatsapp.net"
+						linkedJID := ""
 						if a.WA() != nil {
 							linkedJID = a.WA().LinkedJID()
+						}
+						if linkedJID == "" && a.IsMock() {
+							linkedJID = "mock@s.whatsapp.net"
 						}
 						_ = a.Events().Emit("ready", map[string]any{
 							"jid":    linkedJID,
