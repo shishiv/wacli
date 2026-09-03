@@ -67,6 +67,7 @@ type sendDelegateRequest struct {
 	Chat                 string   `json:"chat,omitempty"`
 	SenderName           string   `json:"sender_name,omitempty"`
 	FromMe               bool     `json:"from_me,omitempty"`
+	Buttons              []string `json:"buttons,omitempty"`
 	PostSendWaitMS       int64    `json:"post_send_wait_ms,omitempty"`
 	TimeoutMS            int64    `json:"timeout_ms,omitempty"`
 	DeadlineUnixMS       int64    `json:"deadline_unix_ms,omitempty"`
@@ -662,6 +663,27 @@ func executeDelegatedInject(ctx context.Context, a *app.App, req sendDelegateReq
 
 	text := req.Message
 
+	var parsedButtons []wa.Button
+	for i, bStr := range req.Buttons {
+		bStr = strings.TrimSpace(bStr)
+		if bStr == "" {
+			continue
+		}
+		parts := strings.SplitN(bStr, ":", 2)
+		text := strings.TrimSpace(parts[0])
+		id := text
+		if len(parts) > 1 {
+			id = strings.TrimSpace(parts[1])
+		}
+		parsedButtons = append(parsedButtons, wa.Button{
+			Index:        i + 1,
+			ID:           id,
+			DisplayText:  text,
+			Type:         "quick_reply",
+			ResponseType: "template_button_reply",
+		})
+	}
+
 	pm := wa.ParsedMessage{
 		Chat:      chatJID,
 		ID:        msgID,
@@ -670,6 +692,7 @@ func executeDelegatedInject(ctx context.Context, a *app.App, req sendDelegateReq
 		Timestamp: now,
 		FromMe:    req.FromMe,
 		Text:      text,
+		Buttons:   parsedButtons,
 	}
 	if err := a.InjectParsedMessage(ctx, pm); err != nil {
 		return sendDelegateResponse{OK: false, Error: err.Error()}, nil

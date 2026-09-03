@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -98,6 +99,10 @@ func newSendSelectCmd(flags *rootFlags) *cobra.Command {
 
 			a, lk, err := newApp(ctx, flags, true, false)
 			if err != nil {
+				var waitMS int64
+				if cmd.Flags().Changed("post-send-wait") {
+					waitMS = durationMillis(postSendWait)
+				}
 				resp, delegated, delegateErr := tryDelegateSend(ctx, flags, err, sendDelegateRequest{
 					Kind:           "button_list_select",
 					To:             to,
@@ -108,7 +113,7 @@ func newSendSelectCmd(flags *rootFlags) *cobra.Command {
 					SelectIndex:    index,
 					Type:           typ,
 					Sender:         senderOverride,
-					PostSendWaitMS: durationMillis(postSendWait),
+					PostSendWaitMS: waitMS,
 				})
 				if delegated {
 					if delegateErr != nil {
@@ -456,7 +461,13 @@ func persistOutboundSelection(ctx context.Context, a *app.App, chat types.JID, c
 	if strings.TrimSpace(chatJID) == "" {
 		chatJID = primaryPollChatJID(ctx, a, chat)
 	}
-	chatName := a.WA().ResolveChatName(ctx, chat, "")
+	chatName := ""
+	if a != nil && a.WA() != nil {
+		chatName = a.WA().ResolveChatName(ctx, chat, "")
+	}
+	if chatName == "" {
+		chatName = chatJID
+	}
 	var storeErr error
 	if err := a.DB().UpsertChat(chatJID, chatKindFromJID(chat), chatName, now); err != nil {
 		storeErr = fmt.Errorf("chat update: %w", err)
@@ -493,7 +504,54 @@ func executeDelegatedButtonListSelect(ctx context.Context, a *app.App, req sendD
 	}
 	toJID, err := resolveRecipient(a, req.To, recipientOptions{pick: req.Pick, asJSON: true})
 	if err != nil {
-		return sendDelegateResponse{}, err
+		if a.IsMock() {
+			toJID, _ = types.ParseJID(req.To)
+			if toJID.IsEmpty() {
+				toJID, _ = wa.ParseUserOrJID(req.To)
+			}
+		} else {
+			return sendDelegateResponse{}, err
+		}
+	}
+	if a.IsMock() {
+		target, chatJID, err := loadSelectTargetMessage(ctx, a, toJID, req.ID)
+		if err != nil {
+			return sendDelegateResponse{}, err
+		}
+		selected, err := resolveSelectOption(target.Buttons, selectReq)
+		if err != nil {
+			return sendDelegateResponse{}, err
+		}
+		sentID := fmt.Sprintf("MOCK-%s", strings.ToUpper(hex.EncodeToString(cryptoRandBytes(8))))
+		now := time.Now().UTC()
+		storeErr := persistOutboundSelection(ctx, a, toJID, chatJID, sentID, selected, now)
+		_ = a.InjectParsedMessage(ctx, wa.ParsedMessage{
+			Chat:      toJID,
+			ID:        sentID,
+			SenderJID: toJID.String(),
+			Timestamp: now,
+			FromMe:    true,
+			Text:      selected.DisplayText,
+		})
+		res := selectResult{
+			Sent:     true,
+			To:       toJID.String(),
+			ID:       sentID,
+			Target:   req.ID,
+			Selected: selected,
+		}
+		if storeErr != nil {
+			res.StoreWarning = storeErr.Error()
+		}
+		return sendDelegateResponse{
+			OK:             true,
+			Sent:           true,
+			To:             res.To,
+			ID:             res.ID,
+			Target:         res.Target,
+			SelectedOption: &res.Selected,
+			StoreWarning:   res.StoreWarning,
+		}, nil
 	}
 	toJID = warmupDelegatedRecipient(ctx, a, toJID)
 	res, err := sendButtonListSelection(ctx, a, toJID, req.ID, selectReq)
