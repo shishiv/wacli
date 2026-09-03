@@ -196,6 +196,7 @@ func newSyncInjectCmd(flags *rootFlags) *cobra.Command {
 		sender     string
 		senderName string
 		message    string
+		buttons    string
 		fromMe     bool
 	)
 
@@ -212,6 +213,16 @@ func newSyncInjectCmd(flags *rootFlags) *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout(flags))
 			defer cancel()
 
+			var buttonList []string
+			if strings.TrimSpace(buttons) != "" {
+				for _, b := range strings.Split(buttons, ",") {
+					b = strings.TrimSpace(b)
+					if b != "" {
+						buttonList = append(buttonList, b)
+					}
+				}
+			}
+
 			req := sendDelegateRequest{
 				Version:    sendDelegateVersion,
 				Kind:       "inject",
@@ -219,6 +230,7 @@ func newSyncInjectCmd(flags *rootFlags) *cobra.Command {
 				Sender:     sender,
 				SenderName: senderName,
 				Message:    message,
+				Buttons:    buttonList,
 				FromMe:     fromMe,
 			}
 			resp, delegated, err := tryDelegateSend(ctx, flags, lock.ErrLocked, req)
@@ -244,6 +256,7 @@ func newSyncInjectCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&sender, "sender", "", "sender JID (optional, defaults to chat)")
 	cmd.Flags().StringVar(&senderName, "sender-name", "", "sender push name (optional)")
 	cmd.Flags().StringVar(&message, "message", "", "message text to inject")
+	cmd.Flags().StringVar(&buttons, "buttons", "", "comma-separated buttons (label:id or label)")
 	cmd.Flags().BoolVar(&fromMe, "from-me", false, "simulate message sent from me")
 
 	return cmd
