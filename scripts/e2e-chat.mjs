@@ -164,12 +164,13 @@ export async function runE2E(options) {
         : ['--index', String(options.index)];
     const selectStart = Date.now();
     const replyFrom = state.events.length;
+    const targetChat = options.to || prompt.data.chat_jid;
     const selected = await runCommand(options.bin, [
       ...globalArgs,
       'send',
       'select',
       '--to',
-      prompt.data.chat_jid,
+      targetChat,
       '--id',
       prompt.data.id,
       ...selector,
@@ -181,7 +182,11 @@ export async function runE2E(options) {
     const reply = await waitForEvent(
       state,
       replyFrom,
-      (event) => event.event === 'message' && event.data?.from_me === false && event.data?.chat_jid === prompt.data.chat_jid,
+      (event) => event.event === 'message' && event.data?.from_me === false && (
+        event.data?.chat_jid === prompt.data.chat_jid ||
+        event.data?.chat_jid === targetChat ||
+        (targetChat && event.data?.sender_jid?.includes(targetChat.split('@')[0]))
+      ),
       options.timeoutMs,
       'post-selection reply',
     );
