@@ -7,13 +7,15 @@ Read when: running continuous capture, one-shot sync, contact/group refresh, or 
 ## Command
 
 ```bash
-wacli sync [--once] [--follow] [--idle-exit 30s] [--max-reconnect 5m] [--stale-threshold DURATION] [--presence-mode normal|quiet] [--send-spacing DURATION|MIN-MAX] [--max-messages N] [--max-db-size SIZE] [--download-media] [--refresh-contacts] [--refresh-groups] [--refresh-channels] [--events] [--webhook URL] [--webhook-secret SECRET] [--webhook-events LIST]
+wacli sync [--once] [--follow] [--json] [--mock] [--idle-exit 30s] [--max-reconnect 5m] [--stale-threshold DURATION] [--presence-mode normal|quiet] [--send-spacing DURATION|MIN-MAX] [--max-messages N] [--max-db-size SIZE] [--download-media] [--refresh-contacts] [--refresh-groups] [--refresh-channels] [--events] [--webhook URL] [--webhook-secret SECRET] [--webhook-events LIST]
 ```
 
 ## Modes
 
 - Default behavior follows continuously.
 - `--once` exits after sync becomes idle.
+- `--follow --json` writes `ready`, `message`, receipt, presence, warning, and lifecycle events as NDJSON on stdout. Message events include stored button/list options.
+- `--mock` (or `WACLI_MOCK=1`) runs without WhatsApp and exposes the normal follow socket; use `wacli sync inject --chat JID --message TEXT` to add a synthetic inbound text message.
 - `--idle-exit` controls idle exit timing in once mode.
 - `--max-reconnect 0` keeps reconnecting indefinitely.
 - If WhatsApp revokes the linked session, sync emits a terminal `logged_out` event, cancels any reconnect already in progress, and exits cleanly. Re-pair with `wacli auth logout` followed by `wacli auth --phone`.
@@ -95,3 +97,18 @@ wacli sync --follow --stale-threshold 2m --events 2>events.ndjson
 wacli sync --follow --webhook https://example.com/wacli --webhook-secret "$WACLI_WEBHOOK_SECRET"
 wacli sync --follow --webhook https://example.com/wacli --webhook-events message,receipt,chat_presence
 ```
+
+## Live conversation smoke test
+
+`scripts/e2e-chat.mjs` drives one text → interactive prompt → selection → reply journey through a real `sync --follow --json` daemon and reports both response latencies:
+
+```bash
+pnpm e2e:chat -- \
+  --to 15551234567@s.whatsapp.net \
+  --message ajuda \
+  --button-id onboarding_info \
+  --expect "acompanhar os gastos" \
+  --output test-evidence/chat.json
+```
+
+The script requires an authenticated store, fails if sync stdout contains a non-NDJSON line, and always stops the daemon it started. Ordinary quick replies and list rows retain `send select`'s documented quoted-text transport; the report labels this as `"transport": "quoted_text"` and does not claim a synthetic phone tap.

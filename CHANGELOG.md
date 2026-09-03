@@ -2,8 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Verification: add a reusable live text → interactive selection → reply driver with latency evidence.
+
 ### Fixed
 
+- Sync: keep `--follow --json` stdout valid NDJSON by routing libsignal errors to stderr.
+- Send: reuse cached PN-to-LID mappings before live registration lookup to avoid repeated warmup delays for known recipients.
 - CLI: keep successful JSON commands successful when a pipe reader closes early, including Unix stdout SIGPIPE and Windows closed-pipe errors. (#366 - thanks @SebTardif)
 - Groups: warn on stderr when `groups list` truncates matching results, including JSON output, and keep `--events` warnings machine-readable. (#360 - thanks @hchittanuru3)
 - Sync: update whatsmeow so incoming socket frames use the active connection context.

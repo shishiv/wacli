@@ -32,3 +32,15 @@ func TestWhatsmeowLoggerSubmoduleSharesWriter(t *testing.T) {
 		t.Fatalf("unexpected submodule log line: %q", got)
 	}
 }
+
+func TestLibsignalLoggerWritesErrorsToConfiguredWriter(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := &libsignalLogger{w: &stderr}
+
+	logger.Info("SessionCipher.go:1", "hidden")
+	logger.Error("SessionCipher.go:2", "old counter")
+
+	if got := stderr.String(); got != "[libsignal ERROR] SessionCipher.go:2: old counter\n" {
+		t.Fatalf("unexpected log line: %q", got)
+	}
+}
