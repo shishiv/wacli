@@ -402,3 +402,41 @@ func TestChatsMarkUnreadDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) 
 		}
 	}
 }
+
+func TestSyncInjectDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) {
+	skipPresenceDelegateSocketTestOnUnsupportedOS(t)
+	storeDir := shortPresenceDelegateStoreDir(t)
+	lk, err := lock.Acquire(storeDir)
+	if err != nil {
+		t.Fatalf("lock store: %v", err)
+	}
+	defer lk.Release()
+
+	server := startPresenceDelegateTestSocket(t, storeDir, func(req sendDelegateRequest) sendDelegateResponse {
+		return sendDelegateResponse{
+			OK: true, Chat: "120363429631482848@g.us", ID: "SIM-12345",
+		}
+	})
+	defer server.stop()
+
+	stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		"--store", storeDir, "--json", "--timeout", "750ms",
+		"sync", "inject", "--chat", "120363429631482848@g.us", "--sender", "553492009508@s.whatsapp.net", "--message", "oi",
+	})
+	if err != nil {
+		t.Fatalf("sync inject failed: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+
+	req := server.nextRequest(t)
+	if req.Version != sendDelegateVersion || req.Kind != "inject" {
+		t.Fatalf("delegate version/kind = %d/%q", req.Version, req.Kind)
+	}
+	if req.Chat != "120363429631482848@g.us" || req.Sender != "553492009508@s.whatsapp.net" || req.Message != "oi" {
+		t.Fatalf("delegate request = %+v", req)
+	}
+	for _, want := range []string{`"injected":true`, `"id":"SIM-12345"`, `"chat":"120363429631482848@g.us"`} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout %q missing %s", stdout, want)
+		}
+	}
+}
