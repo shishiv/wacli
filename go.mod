@@ -8,6 +8,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/spf13/cobra v1.10.2
+	go.mau.fi/libsignal v0.2.2
 	go.mau.fi/whatsmeow v0.0.0-20260903111606-de26b4ab6499
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0
@@ -58,7 +59,6 @@ require (
 	github.com/vektah/gqlparser/v2 v2.5.37 // indirect
 	github.com/wasilibs/go-pgquery v0.0.0-20260818004747-c59cae23afec // indirect
 	github.com/wasilibs/wazero-helpers v0.0.0-20250123031827-cd30c44769bb // indirect
-	go.mau.fi/libsignal v0.2.2 // indirect
 	go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde // indirect
 	go.opentelemetry.io/otel v1.46.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.46.0 // indirect

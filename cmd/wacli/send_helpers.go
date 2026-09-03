@@ -148,20 +148,32 @@ type whatsappRegistrationResolver interface {
 	IsOnWhatsApp(ctx context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error)
 }
 
+type cachedLIDResolver interface {
+	ResolvePNToLID(ctx context.Context, jid types.JID) types.JID
+}
+
 func warmupRecipient(ctx context.Context, wa userInfoResolver, jid types.JID, stderr io.Writer) types.JID {
 	if jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer {
 		return jid
 	}
 	if jid.Server == types.DefaultUserServer {
-		if resolver, ok := any(wa).(whatsappRegistrationResolver); ok {
-			registrations, regErr := resolver.IsOnWhatsApp(ctx, []string{"+" + jid.User})
-			if regErr != nil {
-				fmt.Fprintf(stderr, "warn: send registration warmup for %s failed (send will proceed): %v\n", jid, regErr)
-			} else if len(registrations) > 0 && registrations[0].IsIn && !registrations[0].JID.IsEmpty() {
-				jid = registrations[0].JID.ToNonAD()
+		if resolver, ok := any(wa).(cachedLIDResolver); ok {
+			if cached := resolver.ResolvePNToLID(ctx, jid); cached != jid && !cached.IsEmpty() {
+				jid = cached.ToNonAD()
+			}
+		}
+		if jid.Server == types.DefaultUserServer {
+			if resolver, ok := any(wa).(whatsappRegistrationResolver); ok {
+				registrations, regErr := resolver.IsOnWhatsApp(ctx, []string{"+" + jid.User})
+				if regErr != nil {
+					fmt.Fprintf(stderr, "warn: send registration warmup for %s failed (send will proceed): %v\n", jid, regErr)
+				} else if len(registrations) > 0 && registrations[0].IsIn && !registrations[0].JID.IsEmpty() {
+					jid = registrations[0].JID.ToNonAD()
+				}
 			}
 		}
 	}
+
 	_, err := wa.GetUserInfo(ctx, []types.JID{jid})
 	if err != nil {
 		fmt.Fprintf(stderr, "warn: send warmup for %s failed (send will proceed): %v\n", jid, err)
