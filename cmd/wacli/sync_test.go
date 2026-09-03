@@ -74,3 +74,23 @@ func TestSyncCommandRejectsInvalidPresenceMode(t *testing.T) {
 		t.Fatalf("expected presence-mode validation error, got %v", err)
 	}
 }
+
+func TestSyncCommandExposesMockFlag(t *testing.T) {
+	cmd := newSyncCmd(&rootFlags{})
+	if cmd.Flags().Lookup("mock") == nil {
+		t.Fatal("missing --mock flag on sync command")
+	}
+}
+
+func TestSyncInjectCommandFlags(t *testing.T) {
+	cmd := newSyncCmd(&rootFlags{})
+	injectCmd, _, err := cmd.Find([]string{"inject"})
+	if err != nil || injectCmd == nil {
+		t.Fatalf("missing inject subcommand on sync: %v", err)
+	}
+	for _, name := range []string{"chat", "sender", "sender-name", "message", "from-me"} {
+		if injectCmd.Flags().Lookup(name) == nil {
+			t.Fatalf("missing --%s flag on sync inject command", name)
+		}
+	}
+}
