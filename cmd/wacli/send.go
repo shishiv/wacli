@@ -180,7 +180,9 @@ type outboundTextResolver interface {
 }
 
 func canonicalOutboundChat(ctx context.Context, resolver outboundTextResolver, chat types.JID) types.JID {
-	chat = resolver.ResolveLIDToPN(ctx, chat)
+	if resolver != nil {
+		chat = resolver.ResolveLIDToPN(ctx, chat)
+	}
 	if chat.Server == types.DefaultUserServer {
 		chat = chat.ToNonAD()
 	}
@@ -189,7 +191,13 @@ func canonicalOutboundChat(ctx context.Context, resolver outboundTextResolver, c
 
 func persistOutboundTextWith(ctx context.Context, db *store.DB, resolver outboundTextResolver, chat types.JID, msgID, text string, now time.Time) error {
 	chat = canonicalOutboundChat(ctx, resolver, chat)
-	chatName := resolver.ResolveChatName(ctx, chat, "")
+	chatName := ""
+	if resolver != nil {
+		chatName = resolver.ResolveChatName(ctx, chat, "")
+	}
+	if chatName == "" {
+		chatName = chat.String()
+	}
 	var storeErr error
 	if err := db.UpsertChat(chat.String(), chatKindFromJID(chat), chatName, now); err != nil {
 		storeErr = fmt.Errorf("chat update: %w", err)

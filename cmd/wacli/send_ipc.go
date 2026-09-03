@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +64,9 @@ type sendDelegateRequest struct {
 	PresenceState        string   `json:"presence_state,omitempty"`
 	PresenceMedia        string   `json:"presence_media,omitempty"`
 	Read                 *bool    `json:"read,omitempty"`
+	Chat                 string   `json:"chat,omitempty"`
+	SenderName           string   `json:"sender_name,omitempty"`
+	FromMe               bool     `json:"from_me,omitempty"`
 	PostSendWaitMS       int64    `json:"post_send_wait_ms,omitempty"`
 	TimeoutMS            int64    `json:"timeout_ms,omitempty"`
 	DeadlineUnixMS       int64    `json:"deadline_unix_ms,omitempty"`
@@ -297,6 +303,8 @@ func executeDelegatedSend(parent context.Context, a *app.App, req sendDelegateRe
 		return executeDelegatedEdit(ctx, a, req)
 	case "mark_read":
 		return executeDelegatedMarkRead(ctx, a, req)
+	case "inject":
+		return executeDelegatedInject(ctx, a, req)
 	default:
 		return sendDelegateResponse{}, fmt.Errorf("unsupported send kind %q", req.Kind)
 	}
@@ -305,18 +313,30 @@ func executeDelegatedSend(parent context.Context, a *app.App, req sendDelegateRe
 func executeDelegatedMarkRead(ctx context.Context, a *app.App, req sendDelegateRequest) (sendDelegateResponse, error) {
 	toJID, err := resolveRecipient(a, req.To, recipientOptions{pick: req.Pick, asJSON: true})
 	if err != nil {
-		return sendDelegateResponse{}, err
+		if a.IsMock() {
+			toJID, _ = types.ParseJID(req.To)
+		} else {
+			return sendDelegateResponse{}, err
+		}
 	}
 	read := true
 	if req.Read != nil {
 		read = *req.Read
 	}
-	if err := a.MarkChatRead(ctx, toJID, read); err != nil {
-		return sendDelegateResponse{}, err
-	}
 	action := "mark-read"
 	if !read {
 		action = "mark-unread"
+	}
+	if a.IsMock() {
+		count := 0
+		if !read {
+			count = 1
+		}
+		_ = a.DB().SetChatUnreadCount(toJID.String(), count)
+		return sendDelegateResponse{OK: true, Chat: toJID.String(), Action: action}, nil
+	}
+	if err := a.MarkChatRead(ctx, toJID, read); err != nil {
+		return sendDelegateResponse{}, err
 	}
 	return sendDelegateResponse{OK: true, Chat: toJID.String(), Action: action}, nil
 }
@@ -378,7 +398,25 @@ func executeDelegatedText(ctx context.Context, a *app.App, req sendDelegateReque
 	}
 	toJID, err := resolveRecipient(a, req.To, recipientOptions{pick: req.Pick, asJSON: true})
 	if err != nil {
-		return sendDelegateResponse{}, err
+		if a.IsMock() {
+			toJID, _ = types.ParseJID(req.To)
+		} else {
+			return sendDelegateResponse{}, err
+		}
+	}
+	if a.IsMock() {
+		msgID := fmt.Sprintf("MOCK-%s", strings.ToUpper(hex.EncodeToString(cryptoRandBytes(8))))
+		now := time.Now().UTC()
+		_ = persistOutboundText(ctx, a, toJID, msgID, req.Message, now)
+		_ = a.InjectParsedMessage(ctx, wa.ParsedMessage{
+			Chat:      toJID,
+			ID:        msgID,
+			SenderJID: toJID.String(),
+			Timestamp: now,
+			FromMe:    true,
+			Text:      req.Message,
+		})
+		return sendDelegateResponse{OK: true, Sent: true, To: toJID.String(), ID: msgID}, nil
 	}
 	if err := validateTextRecipient(a.WA(), toJID); err != nil {
 		return sendDelegateResponse{}, err
@@ -585,4 +623,62 @@ func commandTimeout(flags *rootFlags) time.Duration {
 		return 5 * time.Minute
 	}
 	return flags.timeout
+}
+
+func executeDelegatedInject(ctx context.Context, a *app.App, req sendDelegateRequest) (sendDelegateResponse, error) {
+	chatStr := strings.TrimSpace(req.Chat)
+	if chatStr == "" {
+		chatStr = strings.TrimSpace(req.To)
+	}
+	if chatStr == "" {
+		return sendDelegateResponse{OK: false, Error: "missing chat JID"}, nil
+	}
+	chatJID, err := types.ParseJID(chatStr)
+	if err != nil {
+		chatJID, err = wa.ParseUserOrJID(chatStr)
+		if err != nil {
+			return sendDelegateResponse{OK: false, Error: fmt.Sprintf("invalid chat JID: %v", err)}, nil
+		}
+	}
+
+	senderStr := strings.TrimSpace(req.Sender)
+	if senderStr == "" && !req.FromMe {
+		senderStr = chatStr
+	}
+	senderJID := chatJID
+	if senderStr != "" {
+		if j, err := types.ParseJID(senderStr); err == nil {
+			senderJID = j
+		} else if j, err := wa.ParseUserOrJID(senderStr); err == nil {
+			senderJID = j
+		}
+	}
+
+	msgID := req.ID
+	if msgID == "" {
+		msgID = fmt.Sprintf("SIM-%s", strings.ToUpper(hex.EncodeToString(cryptoRandBytes(8))))
+	}
+	now := time.Now().UTC()
+
+	text := req.Message
+
+	pm := wa.ParsedMessage{
+		Chat:      chatJID,
+		ID:        msgID,
+		SenderJID: senderJID.String(),
+		PushName:  req.SenderName,
+		Timestamp: now,
+		FromMe:    req.FromMe,
+		Text:      text,
+	}
+	if err := a.InjectParsedMessage(ctx, pm); err != nil {
+		return sendDelegateResponse{OK: false, Error: err.Error()}, nil
+	}
+	return sendDelegateResponse{OK: true, ID: msgID, Chat: chatJID.String(), Sent: true}, nil
+}
+
+func cryptoRandBytes(n int) []byte {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return b
 }

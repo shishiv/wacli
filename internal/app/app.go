@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -125,6 +126,7 @@ type App struct {
 	manualFetchMu   sync.Mutex
 	manualFetches   map[string]int
 	heartbeatLast   atomic.Int64
+	mockActive      bool
 }
 
 func New(opts Options) (*App, error) {
@@ -258,4 +260,28 @@ func (a *App) Connect(ctx context.Context, allowQR bool, qrWriter func(string)) 
 		AllowQR:  allowQR,
 		OnQRCode: qrWriter,
 	})
+}
+
+func (a *App) IsMock() bool {
+	return a != nil && a.mockActive
+}
+
+func (a *App) SetMock(active bool) {
+	if a != nil {
+		a.mockActive = active
+	}
+}
+
+func (a *App) InjectParsedMessage(ctx context.Context, pm wa.ParsedMessage) error {
+	if a == nil {
+		return errors.New("app is nil")
+	}
+	if err := a.storeParsedMessageForSync(ctx, pm); err != nil {
+		return err
+	}
+	if a.shouldIncrementLiveUnread(ctx, pm) {
+		a.incrementLiveUnread(ctx, pm)
+	}
+	a.emitLiveMessage(ctx, pm)
+	return nil
 }

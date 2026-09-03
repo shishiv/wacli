@@ -116,6 +116,15 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 		case *events.Receipt:
 			lastEvent.Store(nowUTC().UnixNano())
 			a.handleReceiptPersistenceEvent(ctx, v)
+			if a.eventsEnabled() && v != nil {
+				a.emitEvent("receipt", map[string]any{
+					"chat_jid":    v.Chat.String(),
+					"sender_jid":  v.Sender.String(),
+					"message_ids": v.MessageIDs,
+					"type":        string(v.Type),
+					"timestamp":   v.Timestamp.Unix(),
+				})
+			}
 			if opts.WebhookEvents.Enabled(SyncWebhookEventReceipt) {
 				if job, ok := newSyncWebhookReceiptEvent(v); ok {
 					enqueueWebhook(job)
@@ -124,6 +133,13 @@ func (a *App) addSyncEventHandler(ctx context.Context, opts SyncOptions, message
 		case *events.ChatPresence:
 			// Deliberately does not touch lastEvent: typing notifications must
 			// not keep an idle-exit sync alive.
+			if a.eventsEnabled() && v != nil {
+				a.emitEvent("chat_presence", map[string]any{
+					"chat_jid":   v.Chat.String(),
+					"sender_jid": v.Sender.String(),
+					"state":      string(v.State),
+				})
+			}
 			if opts.WebhookEvents.Enabled(SyncWebhookEventChatPresence) {
 				if job, ok := newSyncWebhookChatPresenceEvent(v); ok {
 					enqueueWebhook(job)
@@ -563,6 +579,7 @@ func (a *App) handleLiveSyncMessage(ctx context.Context, opts SyncOptions, v *ev
 			a.incrementLiveUnread(ctx, pm)
 		}
 		a.emitSyncProgress(messagesStored.Add(1))
+		a.emitLiveMessage(ctx, pm)
 		if enqueueWebhook != nil {
 			enqueueWebhook(pm)
 		}
@@ -916,4 +933,41 @@ func (a *App) sendPresenceBounded(presence types.Presence) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	a.sendPresence(ctx, presence)
+}
+
+func (a *App) emitLiveMessage(ctx context.Context, pm wa.ParsedMessage) {
+	if !a.eventsEnabled() {
+		return
+	}
+	chatJID := pm.Chat.String()
+	chatName := ""
+	if a.wa != nil {
+		chatName = a.wa.ResolveChatName(ctx, pm.Chat, pm.PushName)
+	}
+	data := map[string]any{
+		"id":          pm.ID,
+		"chat_jid":    chatJID,
+		"chat_name":   chatName,
+		"sender_jid":  pm.SenderJID,
+		"sender_name": pm.PushName,
+		"from_me":     pm.FromMe,
+		"timestamp":   pm.Timestamp.Unix(),
+		"text":        pm.Text,
+		"reply_to_id": pm.ReplyToID,
+		"is_group":    pm.Chat.Server == types.GroupServer,
+	}
+	if len(pm.Buttons) > 0 {
+		data["buttons"] = pm.Buttons
+	}
+	if pm.Media != nil {
+		data["media_type"] = pm.Media.Type
+		if pm.Media.Caption != "" {
+			data["media_caption"] = pm.Media.Caption
+		}
+	}
+	if pm.ReactionEmoji != "" {
+		data["reaction_emoji"] = pm.ReactionEmoji
+		data["reaction_to_id"] = pm.ReactionToID
+	}
+	a.emitEvent("message", data)
 }

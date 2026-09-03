@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/openclaw/wacli/internal/out"
+	"github.com/openclaw/wacli/internal/wa"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -179,5 +181,90 @@ func TestSyncRefreshFailuresWarnAndContinue(t *testing.T) {
 		if !strings.Contains(raw, want) {
 			t.Fatalf("missing warning %q in:\n%q", want, raw)
 		}
+	}
+}
+
+func TestSyncLiveMessageEmitsMessageEvent(t *testing.T) {
+	a := newTestApp(t)
+	var b bytes.Buffer
+	a.opts.Events = out.NewEventWriter(&b, true)
+
+	chat := types.JID{User: "120363429631482848", Server: types.GroupServer}
+	sender := types.JID{User: "553492009508", Server: types.DefaultUserServer}
+	pm := wa.ParsedMessage{
+		Chat:      chat,
+		ID:        "TEST-MSG-1",
+		SenderJID: sender.String(),
+		PushName:  "Gastei",
+		Timestamp: time.Now().UTC(),
+		Text:      "Resumo disponível",
+	}
+
+	if err := a.InjectParsedMessage(context.Background(), pm); err != nil {
+		t.Fatalf("InjectParsedMessage: %v", err)
+	}
+
+	outStr := b.String()
+	if !strings.Contains(outStr, `"event":"message"`) {
+		t.Fatalf("expected message event, got %q", outStr)
+	}
+	if !strings.Contains(outStr, `"text":"Resumo disponível"`) {
+		t.Fatalf("expected text in message event, got %q", outStr)
+	}
+	if !strings.Contains(outStr, `"sender_name":"Gastei"`) {
+		t.Fatalf("expected sender_name in message event, got %q", outStr)
+	}
+}
+
+func TestSyncMockModeFollow(t *testing.T) {
+	a := newTestApp(t)
+	var b bytes.Buffer
+	a.opts.Events = out.NewEventWriter(&b, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	afterConnectDone := make(chan struct{})
+	afterConnect := func(ctx context.Context) error {
+		close(afterConnectDone)
+		return nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := a.Sync(ctx, SyncOptions{
+			Mode:         SyncModeFollow,
+			Mock:         true,
+			AfterConnect: afterConnect,
+		})
+		errCh <- err
+	}()
+
+	select {
+	case <-afterConnectDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for afterConnect in mock follow")
+	}
+
+	pm := wa.ParsedMessage{
+		Chat:      types.JID{User: "123", Server: types.DefaultUserServer},
+		ID:        "MOCK-LIVE-1",
+		SenderJID: "123@s.whatsapp.net",
+		Timestamp: time.Now().UTC(),
+		Text:      "Hello Mock",
+	}
+	if err := a.InjectParsedMessage(ctx, pm); err != nil {
+		t.Fatalf("InjectParsedMessage: %v", err)
+	}
+
+	cancel()
+	err := <-errCh
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Sync mock: %v", err)
+	}
+
+	outStr := b.String()
+	if !strings.Contains(outStr, `"event":"message"`) || !strings.Contains(outStr, "Hello Mock") {
+		t.Fatalf("expected message event in mock follow output, got %q", outStr)
 	}
 }
