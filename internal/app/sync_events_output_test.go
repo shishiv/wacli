@@ -276,3 +276,55 @@ func TestSyncMockModeFollow(t *testing.T) {
 		t.Fatalf("expected message event in mock follow output, got %q", outStr)
 	}
 }
+
+func TestSyncMockModeDoesNotPostMessagesWhenWebhookMessagesDisabled(t *testing.T) {
+	a := newTestApp(t)
+	rec := newSyncWebhookRecorder(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	afterConnectDone := make(chan struct{})
+	afterConnect := func(context.Context) error {
+		close(afterConnectDone)
+		return nil
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := a.Sync(ctx, SyncOptions{
+			Mode:                SyncModeFollow,
+			Mock:                true,
+			AfterConnect:        afterConnect,
+			WebhookURL:          rec.srv.URL,
+			WebhookAllowPrivate: true,
+			WebhookEvents: SyncWebhookEventSet{
+				SyncWebhookEventReceipt: true,
+			},
+		})
+		errCh <- err
+	}()
+
+	select {
+	case <-afterConnectDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for afterConnect in mock follow")
+	}
+
+	err := a.InjectParsedMessage(ctx, wa.ParsedMessage{
+		Chat:      types.JID{User: "123", Server: types.DefaultUserServer},
+		ID:        "MOCK-NO-WEBHOOK-1",
+		SenderJID: "123@s.whatsapp.net",
+		Timestamp: time.Now().UTC(),
+		Text:      "not forwarded",
+	})
+	if err != nil {
+		t.Fatalf("InjectParsedMessage: %v", err)
+	}
+	rec.expectSilence(t)
+
+	cancel()
+	err = <-errCh
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Sync mock: %v", err)
+	}
+}
