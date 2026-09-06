@@ -123,8 +123,10 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 	if syncWebhookEnabled(opts) {
 		webhookJobs = make(chan syncWebhookEvent, 512)
 		enqueueWebhook = a.newSyncWebhookEnqueuer(syncCtx, webhookJobs)
-		a.SetWebhookEnqueuer(enqueueWebhook)
-		defer a.SetWebhookEnqueuer(nil)
+		if opts.WebhookEvents.Enabled(SyncWebhookEventMessage) {
+			a.SetWebhookEnqueuer(enqueueWebhook)
+			defer a.SetWebhookEnqueuer(nil)
+		}
 		stopWebhook = a.runSyncWebhookWorker(syncCtx, opts, webhookJobs)
 		defer stopWebhook()
 	}
