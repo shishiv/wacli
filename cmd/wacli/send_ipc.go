@@ -320,6 +320,7 @@ func executeDelegatedSend(parent context.Context, a *app.App, req sendDelegateRe
 
 type delegatedMarkReadApp interface {
 	recipientResolverApp
+	IsMock() bool
 	MarkChatRead(context.Context, types.JID, bool) error
 }
 
@@ -345,7 +346,9 @@ func executeDelegatedMarkRead(ctx context.Context, a delegatedMarkReadApp, req s
 		if !read {
 			count = 1
 		}
-		_ = a.DB().SetChatUnreadCount(toJID.String(), count)
+		if err := a.DB().SetChatUnreadCount(toJID.String(), count); err != nil {
+			return sendDelegateResponse{}, err
+		}
 		return sendDelegateResponse{OK: true, Chat: toJID.String(), Action: action}, nil
 	}
 	if err := a.MarkChatRead(ctx, toJID, read); err != nil {
@@ -420,15 +423,19 @@ func executeDelegatedText(ctx context.Context, a *app.App, req sendDelegateReque
 	if a.IsMock() {
 		msgID := fmt.Sprintf("MOCK-%s", strings.ToUpper(hex.EncodeToString(cryptoRandBytes(8))))
 		now := time.Now().UTC()
-		_ = persistOutboundText(ctx, a, toJID, msgID, req.Message, now)
-		_ = a.InjectParsedMessage(ctx, wa.ParsedMessage{
+		if err := persistOutboundText(ctx, a, toJID, msgID, req.Message, now); err != nil {
+			return sendDelegateResponse{}, err
+		}
+		if err := a.InjectParsedMessage(ctx, wa.ParsedMessage{
 			Chat:      toJID,
 			ID:        msgID,
 			SenderJID: toJID.String(),
 			Timestamp: now,
 			FromMe:    true,
 			Text:      req.Message,
-		})
+		}); err != nil {
+			return sendDelegateResponse{}, err
+		}
 		return sendDelegateResponse{OK: true, Sent: true, To: toJID.String(), ID: msgID}, nil
 	}
 	if err := validateTextRecipient(a.WA(), toJID); err != nil {
