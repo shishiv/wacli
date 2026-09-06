@@ -83,6 +83,10 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 
 			a, lk, err := newApp(ctx, flags, true, false)
 			if err != nil {
+				var waitMS int64
+				if cmd.Flags().Changed("post-send-wait") {
+					waitMS = durationMillis(postSendWait)
+				}
 				resp, delegated, delegateErr := tryDelegateSend(ctx, flags, err, sendDelegateRequest{
 					Kind:                 "text",
 					To:                   to,
@@ -96,7 +100,7 @@ func newSendTextCmd(flags *rootFlags) *cobra.Command {
 					Ephemeral:            ephemeralOpts.Enabled,
 					EphemeralDuration:    ephemeralOpts.Duration,
 					EphemeralDurationSet: ephemeralOpts.DurationSet,
-					PostSendWaitMS:       durationMillis(postSendWait),
+					PostSendWaitMS:       waitMS,
 				})
 				if delegated {
 					if delegateErr != nil {

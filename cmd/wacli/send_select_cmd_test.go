@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openclaw/wacli/internal/store"
 	"go.mau.fi/whatsmeow/types"
@@ -232,5 +234,86 @@ func TestBuildSelectResponseMessageRequiresSenderForUnsyncedGroup(t *testing.T) 
 	}
 	if got := msg.GetExtendedTextMessage().GetContextInfo().GetParticipant(); got != "15551234567@s.whatsapp.net" {
 		t.Fatalf("participant = %q", got)
+	}
+}
+
+func TestExecuteDelegatedButtonListSelectMockMode(t *testing.T) {
+	dir := t.TempDir()
+	flags := &rootFlags{storeDir: dir}
+	a, lk, err := newApp(context.Background(), flags, true, true)
+	if err != nil {
+		t.Fatalf("newApp mock: %v", err)
+	}
+	defer closeApp(a, lk)
+	a.SetMock(true)
+
+	chatJID := "120363000000000000@g.us"
+	now := time.Now().UTC()
+	if err := a.DB().UpsertChat(chatJID, "group", "Test Group", now); err != nil {
+		t.Fatalf("upsert chat: %v", err)
+	}
+	msgID := "PROMPT-MSG-1"
+	if err := a.DB().UpsertMessage(store.UpsertMessageParams{
+		ChatJID:    chatJID,
+		MsgID:      msgID,
+		SenderJID:  "15551234567@s.whatsapp.net",
+		SenderName: "Test Bot",
+		Timestamp:  now,
+		FromMe:     false,
+		Text:       "Choose an option",
+		Buttons: []store.Button{
+			{Index: 1, ID: "onboarding_start", DisplayText: "Quero começar", Type: "quick_reply", ResponseType: selectResponseTemplate},
+			{Index: 2, ID: "onboarding_info", DisplayText: "Saber mais", Type: "quick_reply", ResponseType: selectResponseTemplate},
+		},
+	}); err != nil {
+		t.Fatalf("upsert prompt message: %v", err)
+	}
+
+	req := sendDelegateRequest{
+		Version:  sendDelegateVersion,
+		Kind:     "button_list_select",
+		To:       chatJID,
+		ID:       msgID,
+		ButtonID: "onboarding_start",
+	}
+
+	resp, err := executeDelegatedButtonListSelect(context.Background(), a, req)
+	if err != nil {
+		t.Fatalf("executeDelegatedButtonListSelect: %v", err)
+	}
+	if !resp.OK || !resp.Sent {
+		t.Fatalf("expected OK and Sent true, got %+v", resp)
+	}
+	if !strings.HasPrefix(resp.ID, "MOCK-") {
+		t.Fatalf("expected MOCK- prefix in ID, got %q", resp.ID)
+	}
+	if resp.SelectedOption == nil || resp.SelectedOption.ID != "onboarding_start" {
+		t.Fatalf("unexpected selected option: %+v", resp.SelectedOption)
+	}
+
+	stored, err := a.DB().GetMessage(chatJID, resp.ID)
+	if err != nil {
+		t.Fatalf("lookup stored selection message: %v", err)
+	}
+	if !stored.FromMe || !strings.Contains(stored.Text, "Quero começar") {
+		t.Fatalf("unexpected stored message: %+v", stored)
+	}
+}
+
+func TestExecuteDelegatedButtonListSelectMockRejectsInvalidRecipient(t *testing.T) {
+	a, lk, err := newApp(context.Background(), &rootFlags{storeDir: t.TempDir()}, true, true)
+	if err != nil {
+		t.Fatalf("newApp mock: %v", err)
+	}
+	defer closeApp(a, lk)
+	a.SetMock(true)
+
+	_, err = executeDelegatedButtonListSelect(context.Background(), a, sendDelegateRequest{
+		To:       "not-a-phone",
+		ID:       "PROMPT-MSG-1",
+		ButtonID: "onboarding_start",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid phone number") {
+		t.Fatalf("error = %v, want invalid recipient", err)
 	}
 }

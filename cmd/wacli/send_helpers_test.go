@@ -161,8 +161,16 @@ func TestWarnRapidSendIfNeededSkipsOldOrInvalidMarker(t *testing.T) {
 }
 
 type mockUserInfoClient struct {
-	getUserInfo  func(ctx context.Context, jids []types.JID) (map[types.JID]types.UserInfo, error)
-	isOnWhatsApp func(ctx context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error)
+	getUserInfo    func(ctx context.Context, jids []types.JID) (map[types.JID]types.UserInfo, error)
+	isOnWhatsApp   func(ctx context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error)
+	resolvePNToLID func(ctx context.Context, jid types.JID) types.JID
+}
+
+func (m *mockUserInfoClient) ResolvePNToLID(ctx context.Context, jid types.JID) types.JID {
+	if m.resolvePNToLID == nil {
+		return jid
+	}
+	return m.resolvePNToLID(ctx, jid)
 }
 
 func (m *mockUserInfoClient) GetUserInfo(ctx context.Context, jids []types.JID) (map[types.JID]types.UserInfo, error) {
@@ -259,6 +267,35 @@ func TestWarmupRecipientCanonicalizesRegisteredPhone(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %q", stderr.String())
+	}
+}
+
+func TestWarmupRecipientUsesCachedLIDBeforeRegistrationLookup(t *testing.T) {
+	input := types.NewJID("15551234567", types.DefaultUserServer)
+	cached := types.NewJID("999123456789", types.HiddenUserServer)
+	registrationCalled := false
+	mock := &mockUserInfoClient{
+		resolvePNToLID: func(ctx context.Context, jid types.JID) types.JID {
+			return cached
+		},
+		isOnWhatsApp: func(ctx context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error) {
+			registrationCalled = true
+			return nil, nil
+		},
+		getUserInfo: func(ctx context.Context, jids []types.JID) (map[types.JID]types.UserInfo, error) {
+			if len(jids) != 1 || jids[0] != cached {
+				t.Fatalf("expected cached LID %s, got %v", cached, jids)
+			}
+			return nil, nil
+		},
+	}
+
+	got := warmupRecipient(context.Background(), mock, input, &bytes.Buffer{})
+	if got != cached {
+		t.Fatalf("warmupRecipient returned %s, want %s", got, cached)
+	}
+	if registrationCalled {
+		t.Fatal("IsOnWhatsApp should not run when the session already has a cached LID")
 	}
 }
 
