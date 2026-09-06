@@ -10,7 +10,7 @@ The user runs:
 ```bash
 wacli groups participants list --jid 12036302@g.us
 ```
-Or for automation scripts like `shishiv/gastei`:
+Or for an automation script:
 ```bash
 wacli groups participants list --jid 12036302@g.us --json
 ```
