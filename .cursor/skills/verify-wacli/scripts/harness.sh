@@ -126,6 +126,9 @@ case "$action" in
     cat "$evidence_dir/stdout.json"
     echo ""
     echo "Exit code: $exit_code"
+    if [[ "$exit_code" -ne 0 ]]; then
+      exit "$exit_code"
+    fi
     ;;
 
   *)
