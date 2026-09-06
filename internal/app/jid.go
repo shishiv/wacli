@@ -18,6 +18,9 @@ func canonicalJIDString(jid types.JID) string {
 }
 
 func (a *App) canonicalStoreJID(ctx context.Context, jid types.JID) types.JID {
+	if a == nil || a.wa == nil {
+		return canonicalJID(jid)
+	}
 	return canonicalJID(a.wa.ResolveLIDToPN(ctx, jid))
 }
 

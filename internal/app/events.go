@@ -9,7 +9,7 @@ func (a *App) eventsEnabled() bool {
 	return a != nil && a.Events().Enabled()
 }
 
-func (a *App) emitEvent(event string, data map[string]any) {
+func (a *App) emitEvent(event string, data any) {
 	if a == nil {
 		return
 	}

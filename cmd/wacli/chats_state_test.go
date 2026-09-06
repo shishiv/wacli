@@ -58,6 +58,7 @@ type orderedMarkReadApp struct {
 }
 
 func (f *orderedMarkReadApp) DB() *store.DB { return nil }
+func (f *orderedMarkReadApp) IsMock() bool  { return false }
 
 func (f *orderedMarkReadApp) MarkChatReadWithReceipts(_ context.Context, chat types.JID) (int, types.ReceiptType, error) {
 	f.steps = append(f.steps, "receipts "+chat.String())

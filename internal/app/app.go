@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -134,6 +135,9 @@ type App struct {
 	manualFetches           map[string]int
 	heartbeatLast           atomic.Int64
 	groupInfo               groupInfoCache
+	mockActive              bool
+	webhookEnqueuerMu       sync.Mutex
+	webhookEnqueuer         func(syncWebhookEvent)
 }
 
 func New(opts Options) (*App, error) {
@@ -309,4 +313,50 @@ func (a *App) Connect(ctx context.Context, allowQR bool, qrWriter func(string)) 
 		return err
 	}
 	return a.sessionState.waitForLogin(ctx)
+}
+
+func (a *App) IsMock() bool {
+	return a != nil && a.mockActive
+}
+
+func (a *App) SetMock(active bool) {
+	if a != nil {
+		a.mockActive = active
+	}
+}
+
+func (a *App) SetWebhookEnqueuer(fn func(syncWebhookEvent)) {
+	if a == nil {
+		return
+	}
+	a.webhookEnqueuerMu.Lock()
+	defer a.webhookEnqueuerMu.Unlock()
+	a.webhookEnqueuer = fn
+}
+
+func (a *App) enqueueWebhookEvent(evt syncWebhookEvent) {
+	if a == nil {
+		return
+	}
+	a.webhookEnqueuerMu.Lock()
+	fn := a.webhookEnqueuer
+	a.webhookEnqueuerMu.Unlock()
+	if fn != nil {
+		fn(evt)
+	}
+}
+
+func (a *App) InjectParsedMessage(ctx context.Context, pm wa.ParsedMessage) error {
+	if a == nil {
+		return errors.New("app is nil")
+	}
+	if err := a.storeParsedMessageForSync(ctx, pm); err != nil {
+		return err
+	}
+	if a.shouldIncrementLiveUnread(ctx, pm) {
+		a.incrementLiveUnread(ctx, pm)
+	}
+	a.emitLiveMessage(ctx, pm)
+	a.enqueueWebhookEvent(syncWebhookEvent{Kind: SyncWebhookEventMessage, Message: pm})
+	return nil
 }
