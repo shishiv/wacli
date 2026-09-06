@@ -220,6 +220,7 @@ func TestSyncMockModeFollow(t *testing.T) {
 	a := newTestApp(t)
 	var b bytes.Buffer
 	a.opts.Events = out.NewEventWriter(&b, true)
+	rec := newSyncWebhookRecorder(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -233,9 +234,11 @@ func TestSyncMockModeFollow(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		_, err := a.Sync(ctx, SyncOptions{
-			Mode:         SyncModeFollow,
-			Mock:         true,
-			AfterConnect: afterConnect,
+			Mode:                SyncModeFollow,
+			Mock:                true,
+			AfterConnect:        afterConnect,
+			WebhookURL:          rec.srv.URL,
+			WebhookAllowPrivate: true,
 		})
 		errCh <- err
 	}()
@@ -255,6 +258,11 @@ func TestSyncMockModeFollow(t *testing.T) {
 	}
 	if err := a.InjectParsedMessage(ctx, pm); err != nil {
 		t.Fatalf("InjectParsedMessage: %v", err)
+	}
+
+	body := rec.next(t)
+	if !bytes.Contains(body, []byte(`"Text":"Hello Mock"`)) {
+		t.Fatalf("expected mock message webhook, got %s", body)
 	}
 
 	cancel()

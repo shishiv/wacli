@@ -114,19 +114,21 @@ type Options struct {
 }
 
 type App struct {
-	opts            Options
-	waMu            sync.Mutex
-	wa              WAClient
-	sessionResolver *readOnlySessionResolver
-	db              *store.DB
-	statusMu        sync.Mutex
-	status          *syncStatus
-	chatStateSync   chan struct{}
-	appStatePersist appStatePersistenceSequencer
-	manualFetchMu   sync.Mutex
-	manualFetches   map[string]int
-	heartbeatLast   atomic.Int64
-	mockActive      bool
+	opts              Options
+	waMu              sync.Mutex
+	wa                WAClient
+	sessionResolver   *readOnlySessionResolver
+	db                *store.DB
+	statusMu          sync.Mutex
+	status            *syncStatus
+	chatStateSync     chan struct{}
+	appStatePersist   appStatePersistenceSequencer
+	manualFetchMu     sync.Mutex
+	manualFetches     map[string]int
+	heartbeatLast     atomic.Int64
+	mockActive        bool
+	webhookEnqueuerMu sync.Mutex
+	webhookEnqueuer   func(syncWebhookEvent)
 }
 
 func New(opts Options) (*App, error) {
@@ -272,6 +274,27 @@ func (a *App) SetMock(active bool) {
 	}
 }
 
+func (a *App) SetWebhookEnqueuer(fn func(syncWebhookEvent)) {
+	if a == nil {
+		return
+	}
+	a.webhookEnqueuerMu.Lock()
+	defer a.webhookEnqueuerMu.Unlock()
+	a.webhookEnqueuer = fn
+}
+
+func (a *App) enqueueWebhookEvent(evt syncWebhookEvent) {
+	if a == nil {
+		return
+	}
+	a.webhookEnqueuerMu.Lock()
+	fn := a.webhookEnqueuer
+	a.webhookEnqueuerMu.Unlock()
+	if fn != nil {
+		fn(evt)
+	}
+}
+
 func (a *App) InjectParsedMessage(ctx context.Context, pm wa.ParsedMessage) error {
 	if a == nil {
 		return errors.New("app is nil")
@@ -283,5 +306,6 @@ func (a *App) InjectParsedMessage(ctx context.Context, pm wa.ParsedMessage) erro
 		a.incrementLiveUnread(ctx, pm)
 	}
 	a.emitLiveMessage(ctx, pm)
+	a.enqueueWebhookEvent(syncWebhookEvent{Kind: SyncWebhookEventMessage, Message: pm})
 	return nil
 }
