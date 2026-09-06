@@ -484,3 +484,27 @@ func TestMockDelegatedWritesReturnStoreErrors(t *testing.T) {
 		t.Fatal("mock delegated mark-read succeeded after its store closed")
 	}
 }
+
+func TestParseMockDelegateRecipient(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "123@s.whatsapp.net", want: "123@s.whatsapp.net"},
+		{raw: "+15551234567", want: "15551234567@s.whatsapp.net"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			got, err := parseMockDelegateRecipient(tt.raw)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got.String() != tt.want {
+				t.Fatalf("recipient = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if _, err := parseMockDelegateRecipient("not-a-phone"); err == nil {
+		t.Fatal("invalid recipient parsed successfully")
+	}
+}
