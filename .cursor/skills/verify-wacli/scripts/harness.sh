@@ -42,25 +42,25 @@ VALUES ('12036302@g.us', 'Gastei Finanças', '5511999990001@s.whatsapp.net', 170
 
 -- Seed group participants
 INSERT OR REPLACE INTO group_participants (group_jid, user_jid, role, updated_at)
-VALUES 
+VALUES
   ('12036302@g.us', '5511999990001@s.whatsapp.net', 'admin', 1700000000),
   ('12036302@g.us', '5511999990002@s.whatsapp.net', 'member', 1700000000);
 
 -- Seed contacts
 INSERT OR REPLACE INTO contacts (jid, phone, push_name, full_name, updated_at)
-VALUES 
+VALUES
   ('5511999990001@s.whatsapp.net', '5511999990001', 'Alice', 'Alice Silva', 1700000000),
   ('5511999990002@s.whatsapp.net', '5511999990002', 'Bob', 'Bob Souza', 1700000000);
 
 -- Seed chats
 INSERT OR REPLACE INTO chats (jid, kind, name, last_message_ts, unread, unread_count)
-VALUES 
+VALUES
   ('12036302@g.us', 'group', 'Gastei Finanças', 1700000100, 1, 1),
   ('5511999990002@s.whatsapp.net', 'dm', 'Bob Souza', 1700000050, 0, 0);
 
 -- Seed messages
 INSERT OR REPLACE INTO messages (chat_jid, chat_name, msg_id, sender_jid, sender_name, ts, from_me, text, display_text)
-VALUES 
+VALUES
   ('12036302@g.us', 'Gastei Finanças', 'MSG-001', '5511999990001@s.whatsapp.net', 'Alice Silva', 1700000100, 0, 'Almoço R$ 50', 'Almoço R$ 50');
 SQL
 }

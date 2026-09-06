@@ -58,7 +58,7 @@ INSERT OR REPLACE INTO groups (jid, name, owner_jid, created_ts, is_parent, upda
 VALUES ('12036302@g.us', 'Finanças', '5511999990001@s.whatsapp.net', 1700000000, 0, 1700000000);
 
 INSERT OR REPLACE INTO group_participants (group_jid, user_jid, role, updated_at)
-VALUES 
+VALUES
   ('12036302@g.us', '5511999990001@s.whatsapp.net', 'admin', 1700000000),
   ('12036302@g.us', '5511999990002@s.whatsapp.net', 'member', 1700000000);
 
