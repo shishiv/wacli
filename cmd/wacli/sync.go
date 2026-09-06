@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	appPkg "github.com/openclaw/wacli/internal/app"
+	"github.com/openclaw/wacli/internal/lock"
 	"github.com/openclaw/wacli/internal/out"
 	"github.com/spf13/cobra"
 )
@@ -14,6 +17,7 @@ import (
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var once bool
 	var follow bool
+	var mock bool
 	var idleExit time.Duration
 	var maxReconnect time.Duration
 	var staleThreshold time.Duration
@@ -68,14 +72,17 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 			ctx, stop := signalContextWithEvents(out.NewEventWriter(os.Stderr, flags.events))
 			defer stop()
 
-			a, lk, err := newApp(ctx, flags, true, false)
+			isMock := mock || os.Getenv("WACLI_MOCK") == "1"
+			a, lk, err := newApp(ctx, flags, true, isMock)
 			if err != nil {
 				return err
 			}
 			defer closeApp(a, lk)
 
-			if err := a.EnsureAuthed(); err != nil {
-				return err
+			if !isMock {
+				if err := a.EnsureAuthed(); err != nil {
+					return err
+				}
 			}
 
 			mode := appPkg.SyncModeFollow
@@ -101,8 +108,25 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 						return err
 					}
 					stopSendDelegate = stop
+					if a.Events().Enabled() {
+						linkedJID := ""
+						if a.WA() != nil {
+							linkedJID = a.WA().LinkedJID()
+						}
+						if linkedJID == "" && a.IsMock() {
+							linkedJID = "mock@s.whatsapp.net"
+						}
+						_ = a.Events().Emit("ready", map[string]any{
+							"jid":    linkedJID,
+							"socket": sendDelegateSocketPath(a.StoreDir()),
+						})
+					}
 					return nil
 				}
+			}
+
+			if mode == appPkg.SyncModeFollow && flags.asJSON {
+				a.Events().AddWriter(os.Stdout)
 			}
 
 			res, err := a.Sync(ctx, appPkg.SyncOptions{
@@ -124,18 +148,21 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 				WebhookSecret:       webhookSecret,
 				WebhookAllowPrivate: webhookAllowPrivate,
 				WebhookEvents:       webhookEvents,
+				Mock:                isMock,
 			})
 			if err != nil {
 				return err
 			}
 
-			if flags.asJSON {
+			if mode != appPkg.SyncModeFollow && flags.asJSON {
 				return out.WriteJSON(os.Stdout, map[string]any{
 					"synced":          true,
 					"messages_stored": res.MessagesStored,
 				})
 			}
-			fmt.Fprintf(os.Stdout, "Messages stored: %d\n", res.MessagesStored)
+			if !flags.asJSON {
+				fmt.Fprintf(os.Stdout, "Messages stored: %d\n", res.MessagesStored)
+			}
 			return nil
 		},
 	}
@@ -157,5 +184,67 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&webhookEventsFlag, "webhook-events", string(appPkg.SyncWebhookEventMessage), "comma-separated event types to POST: message, receipt, chat_presence")
 	cmd.Flags().Int64Var(&storage.maxMessages, "max-messages", 0, "maximum total messages to keep in the local DB before sync stops (0 = unlimited, or WACLI_SYNC_MAX_MESSAGES)")
 	cmd.Flags().StringVar(&storage.maxDBSize, "max-db-size", "", "maximum wacli.db disk usage before sync stops, e.g. 500MB or 2GB (default: WACLI_SYNC_MAX_DB_SIZE or unlimited)")
+	cmd.Flags().BoolVar(&mock, "mock", false, "run sync daemon in mock mode without connecting to WhatsApp")
+
+	cmd.AddCommand(newSyncInjectCmd(flags))
+	return cmd
+}
+
+func newSyncInjectCmd(flags *rootFlags) *cobra.Command {
+	var (
+		chat       string
+		sender     string
+		senderName string
+		message    string
+		fromMe     bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "inject",
+		Short: "Inject a simulated message into the running sync daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(chat) == "" {
+				return errors.New("--chat is required")
+			}
+			if strings.TrimSpace(message) == "" {
+				return errors.New("--message is required")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), commandTimeout(flags))
+			defer cancel()
+
+			req := sendDelegateRequest{
+				Version:    sendDelegateVersion,
+				Kind:       "inject",
+				Chat:       chat,
+				Sender:     sender,
+				SenderName: senderName,
+				Message:    message,
+				FromMe:     fromMe,
+			}
+			resp, delegated, err := tryDelegateSend(ctx, flags, lock.ErrLocked, req)
+			if !delegated || err != nil {
+				if err != nil {
+					return fmt.Errorf("inject failed: %w", err)
+				}
+				return errors.New("sync daemon is not running")
+			}
+			if flags.asJSON {
+				return out.WriteJSON(os.Stdout, map[string]any{
+					"injected": true,
+					"id":       resp.ID,
+					"chat":     resp.Chat,
+				})
+			}
+			fmt.Fprintf(os.Stdout, "Injected message %s into %s\n", resp.ID, resp.Chat)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&chat, "chat", "", "chat JID (user or group)")
+	cmd.Flags().StringVar(&sender, "sender", "", "sender JID (optional, defaults to chat)")
+	cmd.Flags().StringVar(&senderName, "sender-name", "", "sender push name (optional)")
+	cmd.Flags().StringVar(&message, "message", "", "message text to inject")
+	cmd.Flags().BoolVar(&fromMe, "from-me", false, "simulate message sent from me")
+
 	return cmd
 }

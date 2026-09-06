@@ -47,3 +47,20 @@ func TestEventWriterEmitsNDJSON(t *testing.T) {
 		t.Fatalf("unexpected data payload: %#v", data)
 	}
 }
+
+func TestEventWriterAddWriter(t *testing.T) {
+	var b1, b2 bytes.Buffer
+	w := NewEventWriter(&b1, true)
+	w.AddWriter(&b2)
+
+	if err := w.Emit("custom", map[string]any{"ok": true}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	if !strings.Contains(b1.String(), `"event":"custom"`) {
+		t.Fatalf("expected b1 to receive event, got %q", b1.String())
+	}
+	if !strings.Contains(b2.String(), `"event":"custom"`) {
+		t.Fatalf("expected b2 to receive event, got %q", b2.String())
+	}
+}

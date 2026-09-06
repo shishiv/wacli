@@ -79,6 +79,7 @@ type SyncOptions struct {
 	WebhookAllowPrivate bool
 	WebhookEvents       SyncWebhookEventSet // nil = messages only
 	Verbosity           int                 // future
+	Mock                bool
 }
 
 type SyncResult struct {
@@ -115,6 +116,50 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 	syncCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	limits := &syncStorageLimits{app: a, opts: opts, cancel: cancel}
+
+	var stopWebhook func()
+	var webhookJobs chan syncWebhookEvent
+	enqueueWebhook := func(syncWebhookEvent) {}
+	if syncWebhookEnabled(opts) {
+		webhookJobs = make(chan syncWebhookEvent, 512)
+		enqueueWebhook = a.newSyncWebhookEnqueuer(syncCtx, webhookJobs)
+		if opts.WebhookEvents.Enabled(SyncWebhookEventMessage) {
+			a.SetWebhookEnqueuer(enqueueWebhook)
+			defer a.SetWebhookEnqueuer(nil)
+		}
+		stopWebhook = a.runSyncWebhookWorker(syncCtx, opts, webhookJobs)
+		defer stopWebhook()
+	}
+
+	a.SetMock(opts.Mock)
+	if opts.Mock {
+		var messagesStored atomic.Int64
+		lastEvent := atomic.Int64{}
+		connectionEpoch := atomic.Int64{}
+		now := nowUTC().UnixNano()
+		lastEvent.Store(now)
+
+		disconnected := make(chan struct{}, 1)
+		loggedOut := make(chan struct{}, 1)
+		staleReconnect := make(chan staleReconnectRequest, 1)
+
+		if opts.AfterConnect != nil {
+			if err := opts.AfterConnect(syncCtx); err != nil {
+				return SyncResult{}, err
+			}
+		} else if a.eventsEnabled() {
+			a.emitEvent("ready", map[string]any{
+				"jid":    "mock@s.whatsapp.net",
+				"phone":  "mock",
+				"socket": filepath.Join(a.StoreDir(), ".send.sock"),
+			})
+		}
+
+		if opts.Mode == SyncModeFollow {
+			return a.runSyncFollow(syncCtx, opts.MaxReconnect, opts.PresenceMode, &messagesStored, &connectionEpoch, disconnected, loggedOut, staleReconnect)
+		}
+		return a.runSyncUntilIdle(syncCtx, opts.IdleExit, opts.MaxReconnect, opts.PresenceMode, &messagesStored, &lastEvent, disconnected, loggedOut)
+	}
 
 	if err := a.OpenWA(); err != nil {
 		return SyncResult{}, err
@@ -161,16 +206,6 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 			wait()
 		}()
 		waitMedia = mediaQ.waitIdle
-	}
-
-	var stopWebhook func()
-	var webhookJobs chan syncWebhookEvent
-	enqueueWebhook := func(syncWebhookEvent) {}
-	if syncWebhookEnabled(opts) {
-		webhookJobs = make(chan syncWebhookEvent, 512)
-		enqueueWebhook = a.newSyncWebhookEnqueuer(syncCtx, webhookJobs)
-		stopWebhook = a.runSyncWebhookWorker(syncCtx, opts, webhookJobs)
-		defer stopWebhook()
 	}
 
 	ps := &syncPresence{}
@@ -400,7 +435,15 @@ func chatKind(chat types.JID) string {
 func (a *App) storeParsedMessage(ctx context.Context, pm wa.ParsedMessage) error {
 	pm.Chat = a.canonicalStoreJID(ctx, pm.Chat)
 	chatJID := canonicalJIDString(pm.Chat)
-	chatName := a.wa.ResolveChatName(ctx, pm.Chat, pm.PushName)
+	var chatName string
+	if a.wa != nil {
+		chatName = a.wa.ResolveChatName(ctx, pm.Chat, pm.PushName)
+	} else {
+		chatName = pm.PushName
+		if chatName == "" {
+			chatName = chatJID
+		}
+	}
 	if pm.Chat != types.StatusBroadcastJID {
 		if err := a.db.UpsertChat(chatJID, chatKind(pm.Chat), chatName, pm.Timestamp); err != nil {
 			return err
@@ -408,7 +451,7 @@ func (a *App) storeParsedMessage(ctx context.Context, pm wa.ParsedMessage) error
 	}
 
 	// Best-effort: store contact info for DMs.
-	if pm.Chat.Server == types.DefaultUserServer {
+	if pm.Chat.Server == types.DefaultUserServer && a.wa != nil {
 		chat := canonicalJID(pm.Chat)
 		if info, err := a.wa.GetContact(ctx, chat); err == nil {
 			_ = a.db.UpsertContact(
@@ -433,24 +476,26 @@ func (a *App) storeParsedMessage(ctx context.Context, pm wa.ParsedMessage) error
 		if jid, err := types.ParseJID(pm.SenderJID); err == nil {
 			contactJID := a.canonicalStoreJID(ctx, jid)
 			senderJID = contactJID.String()
-			if info, err := a.wa.GetContact(ctx, contactJID); err == nil {
-				if name := wa.BestContactName(info); name != "" {
-					senderName = name
+			if a.wa != nil {
+				if info, err := a.wa.GetContact(ctx, contactJID); err == nil {
+					if name := wa.BestContactName(info); name != "" {
+						senderName = name
+					}
+					_ = a.db.UpsertContact(
+						contactJID.String(),
+						contactJID.User,
+						info.PushName,
+						info.FullName,
+						info.FirstName,
+						info.BusinessName,
+					)
 				}
-				_ = a.db.UpsertContact(
-					contactJID.String(),
-					contactJID.User,
-					info.PushName,
-					info.FullName,
-					info.FirstName,
-					info.BusinessName,
-				)
 			}
 		}
 	}
 
 	// Best-effort: store group metadata (and participants) when available.
-	if pm.Chat.Server == types.GroupServer {
+	if pm.Chat.Server == types.GroupServer && a.wa != nil {
 		if gi, err := a.wa.GetGroupInfo(ctx, pm.Chat); err == nil && gi != nil {
 			_ = a.storeGroupInfo(ctx, gi)
 		}
@@ -573,7 +618,11 @@ func (a *App) storeParsedCallEvent(ctx context.Context, call wa.ParsedCallEvent,
 		return fmt.Errorf("call chat JID is required")
 	}
 	if chatName == "" {
-		chatName = a.wa.ResolveChatName(ctx, call.Chat, "")
+		if a.wa != nil {
+			chatName = a.wa.ResolveChatName(ctx, call.Chat, "")
+		} else {
+			chatName = chatJID
+		}
 	}
 	if err := a.db.UpsertChat(chatJID, chatKind(call.Chat), chatName, call.Timestamp); err != nil {
 		return err
@@ -584,7 +633,7 @@ func (a *App) storeParsedCallEvent(ctx context.Context, call wa.ParsedCallEvent,
 		if jid, err := types.ParseJID(senderJID); err == nil {
 			contactJID := a.canonicalStoreJID(ctx, jid)
 			senderJID = contactJID.String()
-			if senderName == "" {
+			if senderName == "" && a.wa != nil {
 				if info, err := a.wa.GetContact(ctx, contactJID); err == nil {
 					senderName = wa.BestContactName(info)
 				}
