@@ -505,9 +505,9 @@ func executeDelegatedButtonListSelect(ctx context.Context, a *app.App, req sendD
 	toJID, err := resolveRecipient(a, req.To, recipientOptions{pick: req.Pick, asJSON: true})
 	if err != nil {
 		if a.IsMock() {
-			toJID, _ = types.ParseJID(req.To)
-			if toJID.IsEmpty() {
-				toJID, _ = wa.ParseUserOrJID(req.To)
+			toJID, err = parseMockDelegateRecipient(req.To)
+			if err != nil {
+				return sendDelegateResponse{}, err
 			}
 		} else {
 			return sendDelegateResponse{}, err
@@ -525,14 +525,16 @@ func executeDelegatedButtonListSelect(ctx context.Context, a *app.App, req sendD
 		sentID := fmt.Sprintf("MOCK-%s", strings.ToUpper(hex.EncodeToString(cryptoRandBytes(8))))
 		now := time.Now().UTC()
 		storeErr := persistOutboundSelection(ctx, a, toJID, chatJID, sentID, selected, now)
-		_ = a.InjectParsedMessage(ctx, wa.ParsedMessage{
+		if err := a.InjectParsedMessage(ctx, wa.ParsedMessage{
 			Chat:      toJID,
 			ID:        sentID,
 			SenderJID: toJID.String(),
 			Timestamp: now,
 			FromMe:    true,
 			Text:      selected.DisplayText,
-		})
+		}); err != nil {
+			return sendDelegateResponse{}, err
+		}
 		res := selectResult{
 			Sent:     true,
 			To:       toJID.String(),

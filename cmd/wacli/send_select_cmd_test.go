@@ -299,3 +299,21 @@ func TestExecuteDelegatedButtonListSelectMockMode(t *testing.T) {
 		t.Fatalf("unexpected stored message: %+v", stored)
 	}
 }
+
+func TestExecuteDelegatedButtonListSelectMockRejectsInvalidRecipient(t *testing.T) {
+	a, lk, err := newApp(context.Background(), &rootFlags{storeDir: t.TempDir()}, true, true)
+	if err != nil {
+		t.Fatalf("newApp mock: %v", err)
+	}
+	defer closeApp(a, lk)
+	a.SetMock(true)
+
+	_, err = executeDelegatedButtonListSelect(context.Background(), a, sendDelegateRequest{
+		To:       "not-a-phone",
+		ID:       "PROMPT-MSG-1",
+		ButtonID: "onboarding_start",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid phone number") {
+		t.Fatalf("error = %v, want invalid recipient", err)
+	}
+}
