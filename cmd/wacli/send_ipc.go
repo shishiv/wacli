@@ -328,7 +328,10 @@ func executeDelegatedMarkRead(ctx context.Context, a delegatedMarkReadApp, req s
 	toJID, err := resolveRecipient(a, req.To, recipientOptions{pick: req.Pick, asJSON: true})
 	if err != nil {
 		if a.IsMock() {
-			toJID, _ = types.ParseJID(req.To)
+			toJID, err = parseMockDelegateRecipient(req.To)
+			if err != nil {
+				return sendDelegateResponse{}, err
+			}
 		} else {
 			return sendDelegateResponse{}, err
 		}
@@ -415,7 +418,10 @@ func executeDelegatedText(ctx context.Context, a *app.App, req sendDelegateReque
 	toJID, err := resolveRecipient(a, req.To, recipientOptions{pick: req.Pick, asJSON: true})
 	if err != nil {
 		if a.IsMock() {
-			toJID, _ = types.ParseJID(req.To)
+			toJID, err = parseMockDelegateRecipient(req.To)
+			if err != nil {
+				return sendDelegateResponse{}, err
+			}
 		} else {
 			return sendDelegateResponse{}, err
 		}
@@ -701,4 +707,11 @@ func cryptoRandBytes(n int) []byte {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return b
+}
+
+func parseMockDelegateRecipient(raw string) (types.JID, error) {
+	if strings.Contains(strings.TrimSpace(raw), "@") {
+		return types.ParseJID(raw)
+	}
+	return wa.ParseUserOrJID(raw)
 }
