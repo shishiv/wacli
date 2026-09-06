@@ -5,11 +5,13 @@
 ### Added
 
 - Groups: add a read-only `groups participants list` command for local roster snapshots and refresh those snapshots with `sync --refresh-groups`.
+- Verification: add a reusable live text → interactive selection → reply driver with latency evidence.
 
 ### Fixed
 
 - Messages: extract comment bodies and album summaries in live/history sync, preserving comment reply targets and matching quote metadata. (#383 - thanks @shishiv and @Entretoize)
-
+- Sync: keep `--follow --json` stdout valid NDJSON by routing libsignal errors to stderr.
+- Send: reuse cached PN-to-LID mappings before live registration lookup to avoid repeated warmup delays for known recipients.
 - CLI: keep successful JSON commands successful when a pipe reader closes early, including Unix stdout SIGPIPE and Windows closed-pipe errors. (#366 - thanks @SebTardif)
 - Groups: warn on stderr when `groups list` truncates matching results, including JSON output, and keep `--events` warnings machine-readable. (#360 - thanks @hchittanuru3)
 - Sync: update whatsmeow so incoming socket frames use the active connection context.

@@ -3,10 +3,12 @@ package wa
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	signalLog "go.mau.fi/libsignal/logger"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -18,6 +20,28 @@ type whatsmeowLogger struct {
 }
 
 var _ waLog.Logger = (*whatsmeowLogger)(nil)
+
+type libsignalLogger struct {
+	w  io.Writer
+	mu sync.Mutex
+}
+
+func init() {
+	var logger signalLog.Loggable = &libsignalLogger{w: os.Stderr}
+	signalLog.Setup(&logger)
+}
+
+func (l *libsignalLogger) Debug(string, string)   {}
+func (l *libsignalLogger) Info(string, string)    {}
+func (l *libsignalLogger) Warning(string, string) {}
+
+func (l *libsignalLogger) Error(caller, message string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fmt.Fprintf(l.w, "[libsignal ERROR] %s: %s\n", caller, message)
+}
+
+func (l *libsignalLogger) Configure(string) {}
 
 var whatsmeowLogLevels = map[string]int{
 	"":      -1,
