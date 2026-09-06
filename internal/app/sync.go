@@ -117,6 +117,18 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 	defer cancel()
 	limits := &syncStorageLimits{app: a, opts: opts, cancel: cancel}
 
+	var stopWebhook func()
+	var webhookJobs chan syncWebhookEvent
+	enqueueWebhook := func(syncWebhookEvent) {}
+	if syncWebhookEnabled(opts) {
+		webhookJobs = make(chan syncWebhookEvent, 512)
+		enqueueWebhook = a.newSyncWebhookEnqueuer(syncCtx, webhookJobs)
+		a.SetWebhookEnqueuer(enqueueWebhook)
+		defer a.SetWebhookEnqueuer(nil)
+		stopWebhook = a.runSyncWebhookWorker(syncCtx, opts, webhookJobs)
+		defer stopWebhook()
+	}
+
 	a.SetMock(opts.Mock)
 	if opts.Mock {
 		var messagesStored atomic.Int64
@@ -192,16 +204,6 @@ func (a *App) Sync(ctx context.Context, opts SyncOptions) (SyncResult, error) {
 			wait()
 		}()
 		waitMedia = mediaQ.waitIdle
-	}
-
-	var stopWebhook func()
-	var webhookJobs chan syncWebhookEvent
-	enqueueWebhook := func(syncWebhookEvent) {}
-	if syncWebhookEnabled(opts) {
-		webhookJobs = make(chan syncWebhookEvent, 512)
-		enqueueWebhook = a.newSyncWebhookEnqueuer(syncCtx, webhookJobs)
-		stopWebhook = a.runSyncWebhookWorker(syncCtx, opts, webhookJobs)
-		defer stopWebhook()
 	}
 
 	ps := &syncPresence{}
