@@ -337,6 +337,7 @@ type fakeDelegatedMarkReadApp struct {
 }
 
 func (f *fakeDelegatedMarkReadApp) DB() *store.DB { return nil }
+func (f *fakeDelegatedMarkReadApp) IsMock() bool  { return false }
 
 func (f *fakeDelegatedMarkReadApp) MarkChatRead(_ context.Context, chat types.JID, read bool) error {
 	f.calls <- delegatedMarkReadCall{chat: chat, read: read}
@@ -459,5 +460,27 @@ func TestSyncInjectDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout %q missing %s", stdout, want)
 		}
+	}
+}
+
+func TestMockDelegatedWritesReturnStoreErrors(t *testing.T) {
+	a, err := app.New(app.Options{StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	a.SetMock(true)
+	a.Close()
+
+	if _, err := executeDelegatedText(context.Background(), a, sendDelegateRequest{
+		To:      "123@s.whatsapp.net",
+		Message: "hello",
+	}); err == nil {
+		t.Fatal("mock delegated text succeeded after its store closed")
+	}
+
+	if _, err := executeDelegatedMarkRead(context.Background(), a, sendDelegateRequest{
+		To: "123@s.whatsapp.net",
+	}); err == nil {
+		t.Fatal("mock delegated mark-read succeeded after its store closed")
 	}
 }
