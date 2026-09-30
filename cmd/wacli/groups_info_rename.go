@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openclaw/wacli/internal/app"
 	"github.com/openclaw/wacli/internal/out"
 	"github.com/spf13/cobra"
 	"go.mau.fi/whatsmeow/types"
@@ -130,6 +131,14 @@ func newGroupsRenameCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
+func leaveGroup(ctx context.Context, a *app.App, gjid types.JID) error {
+	if err := a.WA().LeaveGroup(ctx, gjid); err != nil {
+		return err
+	}
+	_ = a.DB().MarkGroupLeft(gjid.String(), time.Now().UTC())
+	return nil
+}
+
 func newGroupsLeaveCmd(flags *rootFlags) *cobra.Command {
 	var jidStr string
 	cmd := &cobra.Command{
@@ -142,29 +151,35 @@ func newGroupsLeaveCmd(flags *rootFlags) *cobra.Command {
 			if err := flags.requireWritable(); err != nil {
 				return err
 			}
+			gjid, err := types.ParseJID(jidStr)
+			if err != nil {
+				return err
+			}
 			ctx, cancel := withTimeout(context.Background(), flags)
 			defer cancel()
 
 			a, lk, err := newApp(ctx, flags, true, false)
 			if err != nil {
-				return err
+				// sync --follow holds the store; let it leave the group.
+				_, delegated, delegateErr := tryDelegateSend(ctx, flags, err, sendDelegateRequest{Kind: groupLeaveKind, To: gjid.String()})
+				if !delegated {
+					return err
+				}
+				if delegateErr != nil {
+					return delegateErr
+				}
+			} else {
+				defer closeApp(a, lk)
+				if err := a.EnsureAuthed(ctx); err != nil {
+					return err
+				}
+				if err := a.Connect(ctx, false, nil); err != nil {
+					return err
+				}
+				if err := leaveGroup(ctx, a, gjid); err != nil {
+					return err
+				}
 			}
-			defer closeApp(a, lk)
-
-			if err := a.EnsureAuthed(ctx); err != nil {
-				return err
-			}
-			if err := a.Connect(ctx, false, nil); err != nil {
-				return err
-			}
-			gjid, err := types.ParseJID(jidStr)
-			if err != nil {
-				return err
-			}
-			if err := a.WA().LeaveGroup(ctx, gjid); err != nil {
-				return err
-			}
-			_ = a.DB().MarkGroupLeft(gjid.String(), time.Now().UTC())
 			if flags.asJSON {
 				return out.WriteJSON(os.Stdout, map[string]any{"jid": gjid.String(), "left": true})
 			}

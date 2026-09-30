@@ -19,7 +19,7 @@ wacli sync [--once] [--follow] [--json] [--mock] [--idle-exit 30s] [--max-reconn
 - Default behavior follows continuously.
 - `--once` exits after sync becomes idle.
 - `--follow --json` writes `ready`, `message`, receipt, presence, warning, and lifecycle events as NDJSON on stdout. Message events include stored button/list options.
-- `--mock` (or `WACLI_MOCK=1`) runs without WhatsApp and exposes the normal follow socket; use `wacli sync inject --chat JID --message TEXT` to add a synthetic inbound text message.
+- `--mock` (or `WACLI_MOCK=1`) runs without WhatsApp and exposes the normal follow socket; use `wacli sync inject --chat JID --message TEXT` to add a synthetic inbound text message. Delegated `send text`, `send file` (stored with its media type and caption; nothing is uploaded), `send select`, and `chats mark-read`/`mark-unread` are simulated locally; other delegated operations are refused with an error.
 - `--idle-exit` controls idle exit timing in once mode.
 - `--max-reconnect 0` keeps reconnecting indefinitely.
 - If WhatsApp revokes the linked session, sync emits a terminal `logged_out` event, cancels any reconnect already in progress, and exits cleanly. Re-pair with `wacli auth logout` followed by `wacli auth --phone`.
@@ -40,6 +40,7 @@ wacli sync [--once] [--follow] [--json] [--mock] [--idle-exit 30s] [--max-reconn
   - `send text`, `send file`, `send sticker`, `send voice`, `send react`, `send location`, `send poll`, and `send select`.
   - `poll vote`, `presence typing`, `presence paused`, and `messages edit`.
   - `chats mark-read` and `chats mark-unread`.
+  - `groups create` and `groups leave`.
 - `send status` and the other chat-state commands (`archive`/`unarchive`, `pin`/`unpin`, `mute`/`unmute`) are not delegated and still require the direct store lock.
 - After connecting, sync fetches WhatsApp chat app-state deltas (`regular_high` and `regular_low`) so starred, delete-for-me, mute, archive, pin, and mark-read changes made while `wacli` was offline are caught up instead of relying only on live push notifications.
 - Sync imports messages sent from your other linked devices into the destination chat with `from_me=true`, so local history covers both incoming and outgoing conversation sides.

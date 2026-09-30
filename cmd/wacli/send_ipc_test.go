@@ -643,3 +643,148 @@ func TestParseMockDelegateRecipient(t *testing.T) {
 		t.Fatal("invalid recipient parsed successfully")
 	}
 }
+
+func TestMockDelegatedFileStoresCaptionedMediaFromMe(t *testing.T) {
+	storeDir := t.TempDir()
+	a, err := app.New(app.Options{StoreDir: storeDir})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	defer a.Close()
+	a.SetMock(true)
+	pdf := filepath.Join(storeDir, "fatura.pdf")
+	if err := os.WriteFile(pdf, []byte("%PDF-1.4\n%%EOF\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{
+		Version: sendDelegateVersion,
+		Kind:    "file",
+		To:      "120363000000000001@g.us",
+		File:    pdf,
+		Caption: "conta de luz",
+	})
+	if err != nil {
+		t.Fatalf("mock file: %v", err)
+	}
+	if !resp.OK || !resp.Sent || resp.File["media"] != "document" || resp.File["name"] != "fatura.pdf" {
+		t.Fatalf("response = %+v", resp)
+	}
+	msgs, err := a.DB().ListMessages(store.ListMessagesParams{ChatJID: "120363000000000001@g.us", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	m := msgs[0]
+	if m.MsgID != resp.ID || !m.FromMe || m.SenderJID != "" || m.MediaType != "document" || m.MediaCaption != "conta de luz" || m.Filename != "fatura.pdf" {
+		t.Fatalf("stored message = %+v", m)
+	}
+}
+
+func TestMockDelegatedSendRejectsKindsWithoutSimulation(t *testing.T) {
+	a, err := app.New(app.Options{StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	defer a.Close()
+	a.SetMock(true)
+
+	for _, kind := range []string{"react", "voice", "location", "presence"} {
+		_, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{Version: sendDelegateVersion, Kind: kind, To: "123@s.whatsapp.net"})
+		if err == nil || !strings.Contains(err.Error(), "sync --mock does not support delegated "+kind) {
+			t.Fatalf("%s: err = %v", kind, err)
+		}
+	}
+}
+
+func TestGroupsCreateDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) {
+	skipPresenceDelegateSocketTestOnUnsupportedOS(t)
+	storeDir := shortPresenceDelegateStoreDir(t)
+	lk, err := lock.Acquire(storeDir)
+	if err != nil {
+		t.Fatalf("lock store: %v", err)
+	}
+	defer lk.Release()
+
+	groupJID := types.NewJID("120363000000000009", types.GroupServer)
+	server := startPresenceDelegateTestSocket(t, storeDir, func(req sendDelegateRequest) sendDelegateResponse {
+		info := &types.GroupInfo{JID: groupJID}
+		info.GroupName.Name = "Casal"
+		return sendDelegateResponse{OK: true, Action: "group-create", Chat: groupJID.String(), Group: info}
+	})
+	defer server.stop()
+
+	stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		"--store", storeDir, "--json", "--timeout", "750ms",
+		"groups", "create", "--name", "Casal", "--user", "+15550002002", "--user", "15550002001",
+	})
+	if err != nil {
+		t.Fatalf("groups create failed: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+
+	req := server.nextRequest(t)
+	if req.Version != sendDelegateVersion || req.Kind != groupCreateKind || req.GroupCreate == nil {
+		t.Fatalf("delegate request = %+v", req)
+	}
+	if req.GroupCreate.Name != "Casal" || strings.Join(req.GroupCreate.Users, ",") != "+15550002002,15550002001" {
+		t.Fatalf("group create request = %+v", *req.GroupCreate)
+	}
+	var result struct {
+		Success bool
+		Data    types.GroupInfo
+	}
+	firstLine, _, _ := strings.Cut(stdout, "\n")
+	if err := json.Unmarshal([]byte(firstLine), &result); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if !result.Success || result.Data.JID != groupJID || result.Data.GroupName.Name != "Casal" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestGroupsLeaveDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) {
+	skipPresenceDelegateSocketTestOnUnsupportedOS(t)
+	storeDir := shortPresenceDelegateStoreDir(t)
+	lk, err := lock.Acquire(storeDir)
+	if err != nil {
+		t.Fatalf("lock store: %v", err)
+	}
+	defer lk.Release()
+
+	server := startPresenceDelegateTestSocket(t, storeDir, func(req sendDelegateRequest) sendDelegateResponse {
+		return sendDelegateResponse{OK: true, Action: "group-leave", Chat: req.To}
+	})
+	defer server.stop()
+
+	stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		"--store", storeDir, "--json", "--timeout", "750ms",
+		"groups", "leave", "--jid", "120363000000000009@g.us",
+	})
+	if err != nil {
+		t.Fatalf("groups leave failed: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	req := server.nextRequest(t)
+	if req.Kind != groupLeaveKind || req.To != "120363000000000009@g.us" {
+		t.Fatalf("delegate request = %+v", req)
+	}
+	if !strings.Contains(stdout, `"jid":"120363000000000009@g.us"`) || !strings.Contains(stdout, `"left":true`) {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestDelegatedGroupOperationsValidateBeforeWhatsApp(t *testing.T) {
+	a, err := app.New(app.Options{StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	defer a.Close()
+
+	if _, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{Version: sendDelegateVersion, Kind: groupCreateKind}); err == nil || !strings.Contains(err.Error(), "missing its group") {
+		t.Fatalf("create without payload: err = %v", err)
+	}
+	if _, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{Version: sendDelegateVersion, Kind: groupLeaveKind, To: "15550002001@s.whatsapp.net"}); err == nil {
+		t.Fatal("leave accepted a non-group JID")
+	}
+}

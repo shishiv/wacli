@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,49 +34,50 @@ const (
 var errSendDelegateUnavailable = errors.New("send delegate unavailable")
 
 type sendDelegateRequest struct {
-	Version              int      `json:"version"`
-	Kind                 string   `json:"kind"`
-	To                   string   `json:"to,omitempty"`
-	Pick                 int      `json:"pick,omitempty"`
-	Message              string   `json:"message,omitempty"`
-	Mentions             []string `json:"mentions,omitempty"`
-	ReplyTo              string   `json:"reply_to,omitempty"`
-	ReplyToSender        string   `json:"reply_to_sender,omitempty"`
-	NoPreview            bool     `json:"no_preview,omitempty"`
-	AllowSelf            bool     `json:"allow_self,omitempty"`
-	Ephemeral            bool     `json:"ephemeral,omitempty"`
-	EphemeralDuration    string   `json:"ephemeral_duration,omitempty"`
-	EphemeralDurationSet bool     `json:"ephemeral_duration_set,omitempty"`
-	File                 string   `json:"file,omitempty"`
-	Filename             string   `json:"filename,omitempty"`
-	Caption              string   `json:"caption,omitempty"`
-	MIME                 string   `json:"mime,omitempty"`
-	As                   string   `json:"as,omitempty"`
-	PTT                  bool     `json:"ptt,omitempty"`
-	ID                   string   `json:"id,omitempty"`
-	Reaction             string   `json:"reaction,omitempty"`
-	Sender               string   `json:"sender,omitempty"`
-	Label                string   `json:"label,omitempty"`
-	ButtonID             string   `json:"button_id,omitempty"`
-	SelectIndex          int      `json:"select_index,omitempty"`
-	Type                 string   `json:"type,omitempty"`
-	Latitude             float64  `json:"latitude,omitempty"`
-	Longitude            float64  `json:"longitude,omitempty"`
-	Name                 string   `json:"name,omitempty"`
-	Question             string   `json:"question,omitempty"`
-	Options              []string `json:"options,omitempty"`
-	Selectable           int      `json:"selectable,omitempty"`
-	PresenceState        string   `json:"presence_state,omitempty"`
-	PresenceMedia        string   `json:"presence_media,omitempty"`
-	Read                 *bool    `json:"read,omitempty"`
-	Receipts             bool     `json:"receipts,omitempty"`
-	Chat                 string   `json:"chat,omitempty"`
-	SenderName           string   `json:"sender_name,omitempty"`
-	FromMe               bool     `json:"from_me,omitempty"`
-	Buttons              []string `json:"buttons,omitempty"`
-	PostSendWaitMS       int64    `json:"post_send_wait_ms,omitempty"`
-	TimeoutMS            int64    `json:"timeout_ms,omitempty"`
-	DeadlineUnixMS       int64    `json:"deadline_unix_ms,omitempty"`
+	Version              int                 `json:"version"`
+	Kind                 string              `json:"kind"`
+	To                   string              `json:"to,omitempty"`
+	Pick                 int                 `json:"pick,omitempty"`
+	Message              string              `json:"message,omitempty"`
+	Mentions             []string            `json:"mentions,omitempty"`
+	ReplyTo              string              `json:"reply_to,omitempty"`
+	ReplyToSender        string              `json:"reply_to_sender,omitempty"`
+	NoPreview            bool                `json:"no_preview,omitempty"`
+	AllowSelf            bool                `json:"allow_self,omitempty"`
+	Ephemeral            bool                `json:"ephemeral,omitempty"`
+	EphemeralDuration    string              `json:"ephemeral_duration,omitempty"`
+	EphemeralDurationSet bool                `json:"ephemeral_duration_set,omitempty"`
+	File                 string              `json:"file,omitempty"`
+	Filename             string              `json:"filename,omitempty"`
+	Caption              string              `json:"caption,omitempty"`
+	MIME                 string              `json:"mime,omitempty"`
+	As                   string              `json:"as,omitempty"`
+	PTT                  bool                `json:"ptt,omitempty"`
+	ID                   string              `json:"id,omitempty"`
+	Reaction             string              `json:"reaction,omitempty"`
+	Sender               string              `json:"sender,omitempty"`
+	Label                string              `json:"label,omitempty"`
+	ButtonID             string              `json:"button_id,omitempty"`
+	SelectIndex          int                 `json:"select_index,omitempty"`
+	Type                 string              `json:"type,omitempty"`
+	Latitude             float64             `json:"latitude,omitempty"`
+	Longitude            float64             `json:"longitude,omitempty"`
+	Name                 string              `json:"name,omitempty"`
+	Question             string              `json:"question,omitempty"`
+	Options              []string            `json:"options,omitempty"`
+	Selectable           int                 `json:"selectable,omitempty"`
+	PresenceState        string              `json:"presence_state,omitempty"`
+	PresenceMedia        string              `json:"presence_media,omitempty"`
+	Read                 *bool               `json:"read,omitempty"`
+	Receipts             bool                `json:"receipts,omitempty"`
+	Chat                 string              `json:"chat,omitempty"`
+	SenderName           string              `json:"sender_name,omitempty"`
+	FromMe               bool                `json:"from_me,omitempty"`
+	Buttons              []string            `json:"buttons,omitempty"`
+	GroupCreate          *groupCreateRequest `json:"group_create,omitempty"`
+	PostSendWaitMS       int64               `json:"post_send_wait_ms,omitempty"`
+	TimeoutMS            int64               `json:"timeout_ms,omitempty"`
+	DeadlineUnixMS       int64               `json:"deadline_unix_ms,omitempty"`
 }
 
 type sendDelegateResponse struct {
@@ -96,6 +98,7 @@ type sendDelegateResponse struct {
 	Action         string            `json:"action,omitempty"`
 	Receipts       *int              `json:"receipts,omitempty"`
 	ReceiptType    string            `json:"receipt_type,omitempty"`
+	Group          *types.GroupInfo  `json:"group,omitempty"`
 }
 
 type sendDelegateExecutor func(context.Context, sendDelegateRequest) (sendDelegateResponse, error)
@@ -313,6 +316,10 @@ func executeDelegatedSend(parent context.Context, a *app.App, req sendDelegateRe
 	ctx, cancel := context.WithTimeout(parent, millisDuration(req.TimeoutMS, 5*time.Minute))
 	defer cancel()
 
+	if a.IsMock() && !mockDelegateKinds[req.Kind] {
+		// Mock follow has no WhatsApp client; other kinds would dereference it.
+		return sendDelegateResponse{}, fmt.Errorf("sync --mock does not support delegated %s", req.Kind)
+	}
 	switch req.Kind {
 	case "text":
 		return executeDelegatedText(ctx, a, req)
@@ -343,6 +350,10 @@ func executeDelegatedSend(parent context.Context, a *app.App, req sendDelegateRe
 		return executeDelegatedMarkRead(ctx, a, req)
 	case "inject":
 		return executeDelegatedInject(ctx, a, req)
+	case groupCreateKind:
+		return executeDelegatedGroupCreate(ctx, a, req)
+	case groupLeaveKind:
+		return executeDelegatedGroupLeave(ctx, a, req)
 	default:
 		return sendDelegateResponse{}, fmt.Errorf("unsupported send kind %q", req.Kind)
 	}
@@ -483,7 +494,7 @@ func executeDelegatedText(ctx context.Context, a *app.App, req sendDelegateReque
 		if err := a.InjectParsedMessage(ctx, wa.ParsedMessage{
 			Chat:      toJID,
 			ID:        msgID,
-			SenderJID: toJID.String(),
+			SenderJID: "",
 			Timestamp: now,
 			FromMe:    true,
 			Text:      req.Message,
@@ -522,14 +533,61 @@ func executeDelegatedText(ctx context.Context, a *app.App, req sendDelegateReque
 	return resp, nil
 }
 
+const (
+	groupCreateKind = "group_create"
+	groupLeaveKind  = "group_leave"
+)
+
+func executeDelegatedGroupCreate(ctx context.Context, a *app.App, req sendDelegateRequest) (sendDelegateResponse, error) {
+	if req.GroupCreate == nil {
+		return sendDelegateResponse{}, fmt.Errorf("group_create request is missing its group")
+	}
+	info, err := createGroup(ctx, a, *req.GroupCreate)
+	if err != nil {
+		return sendDelegateResponse{}, err
+	}
+	resp := sendDelegateResponse{OK: true, Action: "group-create", Group: info}
+	if info != nil {
+		resp.Chat = info.JID.String()
+	}
+	return resp, nil
+}
+
+func executeDelegatedGroupLeave(ctx context.Context, a *app.App, req sendDelegateRequest) (sendDelegateResponse, error) {
+	gjid, err := parseGroupJID(req.To)
+	if err != nil {
+		return sendDelegateResponse{}, err
+	}
+	if err := leaveGroup(ctx, a, gjid); err != nil {
+		return sendDelegateResponse{}, err
+	}
+	return sendDelegateResponse{OK: true, Action: "group-leave", Chat: gjid.String()}, nil
+}
+
+// mockDelegateKinds are the delegated operations sync --mock can simulate.
+var mockDelegateKinds = map[string]bool{
+	"text":               true,
+	"file":               true,
+	"button_list_select": true,
+	markReadKind:         true,
+	markReadReceiptsKind: true,
+	"inject":             true,
+}
+
 func executeDelegatedFile(ctx context.Context, a *app.App, req sendDelegateRequest) (sendDelegateResponse, error) {
 	mediaAs, err := validateSendFileMediaOptions(req.As, req.PTT || req.Kind == "voice")
 	if err != nil {
 		return sendDelegateResponse{}, err
 	}
 	toJID, err := resolveRecipient(a, req.To, recipientOptions{pick: req.Pick, asJSON: true})
+	if err != nil && a.IsMock() {
+		toJID, err = parseMockDelegateRecipient(req.To)
+	}
 	if err != nil {
 		return sendDelegateResponse{}, err
+	}
+	if a.IsMock() {
+		return executeMockDelegatedFile(ctx, a, toJID, mediaAs, req)
 	}
 	toJID = warmupDelegatedRecipient(ctx, a, toJID)
 	if err := warnRapidSendIfNeeded(a.StoreDir(), time.Now().UTC(), os.Stderr); err != nil {
@@ -786,4 +844,46 @@ func parseMockDelegateRecipient(raw string) (types.JID, error) {
 		return types.ParseJID(raw)
 	}
 	return wa.ParseUserOrJID(raw)
+}
+
+// executeMockDelegatedFile records an outgoing file as sync --mock would see
+// it after a real send: stored with its media type and caption, and emitted
+// as a message event. Nothing is uploaded.
+func executeMockDelegatedFile(ctx context.Context, a *app.App, toJID types.JID, mediaAs string, req sendDelegateRequest) (sendDelegateResponse, error) {
+	data, err := readSendFileData(req.File)
+	if err != nil {
+		return sendDelegateResponse{}, err
+	}
+	name := strings.TrimSpace(req.Filename)
+	if name == "" {
+		name = filepath.Base(req.File)
+	}
+	mimeType := detectSendFileMIME(req.File, req.MIME, data)
+	mediaType, _, err := resolveSendMediaType(mimeType, mediaAs)
+	if err != nil {
+		return sendDelegateResponse{}, err
+	}
+	msgID := fmt.Sprintf("MOCK-%s", strings.ToUpper(hex.EncodeToString(cryptoRandBytes(8))))
+	if err := a.InjectParsedMessage(ctx, wa.ParsedMessage{
+		Chat:      toJID,
+		ID:        msgID,
+		SenderJID: "",
+		Timestamp: time.Now().UTC(),
+		FromMe:    true,
+		Text:      req.Caption,
+		Media: &wa.Media{
+			Type:     mediaType,
+			Caption:  req.Caption,
+			Filename: name,
+			MimeType: mimeType,
+		},
+	}); err != nil {
+		return sendDelegateResponse{}, err
+	}
+	return sendDelegateResponse{OK: true, Sent: true, To: toJID.String(), ID: msgID, File: map[string]string{
+		"name":      name,
+		"mime_type": mimeType,
+		"media":     mediaType,
+		"ptt":       strconv.FormatBool(req.PTT),
+	}}, nil
 }

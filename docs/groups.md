@@ -48,6 +48,7 @@ wacli groups prune [--days N] [--left-only=false|--include-active] [--dry-run] [
 - `locked --on` makes group info editable only by admins; `--off` allows member edits again.
 - `requests` lists, approves, or rejects pending join requests for groups with join approval enabled.
 - `leave` marks the group left locally after WhatsApp confirms.
+- `create` and `leave` are delegated to a running `sync --follow` process for the same store. Restart an older follow process after upgrading; it rejects them as an unsupported kind. Other live group commands still need the store lock.
 - `prune` only deletes local group/chat/message rows from `wacli.db`. It does not leave WhatsApp groups or delete anything from WhatsApp servers.
 - `prune` defaults to groups marked left locally. `--days N` limits left-group pruning to groups left more than `N` days ago.
 - `prune --include-active --days N` also targets active groups whose last known local message is older than `N` days. Groups with no known local activity timestamp are skipped.
