@@ -91,14 +91,21 @@ func newContactsShowCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			lid, err := contactLIDFor(ctx, a, c.JID)
+			if err != nil {
+				return err
+			}
 
 			if flags.asJSON {
-				return out.WriteJSON(os.Stdout, c)
+				return out.WriteJSON(os.Stdout, contactShowPayload{Contact: c, LID: lid})
 			}
 
 			fmt.Fprintf(os.Stdout, "JID: %s\n", sanitize(c.JID))
 			if c.Phone != "" {
 				fmt.Fprintf(os.Stdout, "Phone: %s\n", sanitize(c.Phone))
+			}
+			if lid != "" {
+				fmt.Fprintf(os.Stdout, "LID: %s\n", sanitize(lid))
 			}
 			if c.Name != "" {
 				fmt.Fprintf(os.Stdout, "Name: %s\n", sanitize(c.Name))

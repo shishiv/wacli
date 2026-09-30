@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/wacli/internal/store"
@@ -281,4 +282,44 @@ func runContactsShow(t *testing.T, storeDir, jid string) store.Contact {
 		t.Fatal(err)
 	}
 	return result.Data
+}
+
+func TestContactsShowReportsLIDForEitherIdentity(t *testing.T) {
+	storeDir := seedContactReadStore(t, true)
+	for _, input := range []string{contactPN, contactLID} {
+		cmd := newContactsShowCmd(&rootFlags{storeDir: storeDir, readOnly: true, asJSON: true})
+		cmd.SetArgs([]string{"--jid", input})
+		raw := captureRootStdout(t, func() {
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("contacts show %s: %v", input, err)
+			}
+		})
+		var result struct {
+			Data struct {
+				JID   string `json:"jid"`
+				Phone string `json:"phone"`
+				LID   string `json:"lid"`
+			}
+		}
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Data.JID != contactPN || result.Data.Phone != "15550001001" || result.Data.LID != contactLID {
+			t.Fatalf("show %s = %+v, want %s / %s", input, result.Data, contactPN, contactLID)
+		}
+	}
+}
+
+func TestContactsShowOmitsLIDWithoutSessionMapping(t *testing.T) {
+	storeDir := seedContactReadStore(t, false)
+	cmd := newContactsShowCmd(&rootFlags{storeDir: storeDir, readOnly: true, asJSON: true})
+	cmd.SetArgs([]string{"--jid", "15550001002@s.whatsapp.net"})
+	raw := captureRootStdout(t, func() {
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("contacts show: %v", err)
+		}
+	})
+	if strings.Contains(raw, `"lid"`) {
+		t.Fatalf("unexpected lid in %s", raw)
+	}
 }

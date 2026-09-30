@@ -262,3 +262,23 @@ func mergeDisplayContacts(primary, secondary store.Contact) store.Contact {
 	}
 	return primary
 }
+
+// contactShowPayload adds the contact's LID, known from the linked session,
+// so scripts can match messages that arrive from its hidden identity.
+type contactShowPayload struct {
+	store.Contact
+	LID string `json:"lid,omitempty"`
+}
+
+func contactLIDFor(ctx context.Context, a *app.App, jid string) (string, error) {
+	jids, err := contactMetadataJIDs(ctx, a, jid)
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range jids {
+		if strings.HasSuffix(candidate, "@"+types.HiddenUserServer) {
+			return candidate, nil
+		}
+	}
+	return "", nil
+}
