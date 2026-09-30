@@ -9,6 +9,7 @@ WhatsApp status broadcasts are stored separately in `status_messages`; they are 
 
 ```bash
 wacli messages list [--chat JID] [--sender JID] [--from-me|--from-them] [--asc] [--limit N] [--after DATE] [--before DATE] [--forwarded] [--starred]
+wacli messages wait [--chat JID] [--sender JID] [--from-me|--from-them] [--after-id MSG_ID|--after TIME] [--count N] [--poll-interval 200ms] [--timeout 30s]
 wacli messages search <query> [--chat JID] [--from JID] [--has-media] [--type text|image|video|audio|document] [--forwarded] [--starred] [--limit N] [--after DATE] [--before DATE]
 wacli messages starred [--chat JID] [--limit N] [--after DATE] [--before DATE] [--asc]
 wacli messages export [--chat JID] [--limit N] [--after DATE] [--before DATE] [--output PATH]
@@ -31,6 +32,20 @@ wacli messages forward --chat JID --id MSG_ID --to RECIPIENT [--pick N] [--post-
 - Comment payloads retain their inner text or media and their envelope's reply target. Album headers show expected image/video counts; those summaries do not recover missing child captions or undecryptable history.
 - `--starred` restricts list/search results to messages marked as starred by WhatsApp.
 - Time filters accept RFC3339 or `YYYY-MM-DD`.
+
+## Wait
+
+`messages wait` blocks until at least `--count` messages (default 1) matching its filters are stored locally, then prints them oldest first with the same fields as `messages list`. It only reads `wacli.db`, so it needs a `sync --follow` process for the same store to be storing new messages, and it works with `--read-only` next to that process.
+
+- `--after-id MSG_ID` (requires `--chat`) matches messages stored after that message, such as the `id` printed by `send text --json`. Local storage order separates a reply from an earlier message in the same timestamp second, so this is the precise way to wait for a reply. If the anchor is not stored yet (another account's message still in transit), wait keeps polling until it and a later match arrive.
+- `--after TIME` matches messages at or after `TIME` at second precision, including ones already stored when wait starts. Messages from that second that came before `TIME` also match, including your own unless you add `--from-them` or `--sender`.
+- Without either bound, only messages that were not stored when wait started match.
+- The global `--timeout` bounds the wait (default 5m). When it expires the command exits non-zero with a "timed out" error.
+
+```bash
+id=$(wacli --json send text --to 120363000000000000@g.us --message "gastei 10 no mercado" | jq -r .data.id)
+wacli --json --timeout 30s messages wait --chat 120363000000000000@g.us --after-id "$id" --from-them
+```
 
 ## Media captions
 
@@ -62,7 +77,7 @@ Plain audio messages have an empty `MediaCaption`. Their `Text` keeps the `[Audi
 
 ## LID mapping
 
-When a phone-number chat JID maps to a stored `@lid` row, list/search/show/context include the mapped rows so historical LID splits do not hide messages.
+When a phone-number chat JID maps to a stored `@lid` row, list/search/show/context include the mapped rows so historical LID splits do not hide messages. `messages list --sender` and `messages wait --sender` apply the same mapping to the sender, and accept a phone number.
 
 ## Examples
 

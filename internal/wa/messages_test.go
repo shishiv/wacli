@@ -261,6 +261,31 @@ func TestParseHistoryMessageUnwrapsTopLevelEdit(t *testing.T) {
 	}
 }
 
+func TestParseLiveMessageDocumentKeepsCaptionAndFilename(t *testing.T) {
+	chat, _ := types.ParseJID("120363000000000001@g.us")
+	sender, _ := types.ParseJID("900000201@lid")
+	ev := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: sender, IsGroup: true},
+			ID:            "doc",
+			Timestamp:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		Message: &waProto.Message{DocumentMessage: &waProto.DocumentMessage{
+			Caption:  proto.String("Relatório de setembro"),
+			FileName: proto.String("gastos.pdf"),
+			Mimetype: proto.String("application/pdf"),
+		}},
+	}
+
+	pm := ParseLiveMessage(ev)
+	if pm.Media == nil || pm.Media.Type != "document" || pm.Media.Caption != "Relatório de setembro" || pm.Media.Filename != "gastos.pdf" || pm.Media.MimeType != "application/pdf" {
+		t.Fatalf("media = %+v", pm.Media)
+	}
+	if pm.Text != "Relatório de setembro" || pm.SenderJID != "900000201@lid" {
+		t.Fatalf("text/sender = %q/%q", pm.Text, pm.SenderJID)
+	}
+}
+
 func TestParseLiveMessageImageClonesBytes(t *testing.T) {
 	chat, _ := types.ParseJID("123@s.whatsapp.net")
 	sender, _ := types.ParseJID("sender@s.whatsapp.net")

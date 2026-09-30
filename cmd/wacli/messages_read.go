@@ -59,17 +59,22 @@ func newMessagesListCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// A sender is one identity under its phone and LID forms, like a chat.
+			senderJIDs, err := messageChatJIDFilter(ctx, a, sender)
+			if err != nil {
+				return err
+			}
 
 			msgs, err := a.DB().ListMessages(store.ListMessagesParams{
-				ChatJIDs:  chatJIDs,
-				SenderJID: sender,
-				Limit:     limit,
-				After:     after,
-				Before:    before,
-				FromMe:    fromMeFilter,
-				Asc:       asc,
-				Forwarded: forwarded,
-				Starred:   starred,
+				ChatJIDs:   chatJIDs,
+				SenderJIDs: senderJIDs,
+				Limit:      limit,
+				After:      after,
+				Before:     before,
+				FromMe:     fromMeFilter,
+				Asc:        asc,
+				Forwarded:  forwarded,
+				Starred:    starred,
 			})
 			if err != nil {
 				return err
@@ -88,7 +93,7 @@ func newMessagesListCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&chat, "chat", "", "filter by chat JID")
-	cmd.Flags().StringVar(&sender, "sender", "", "filter by sender JID")
+	cmd.Flags().StringVar(&sender, "sender", "", "filter by sender JID or phone number (matches its phone and LID forms)")
 	cmd.Flags().IntVar(&limit, "limit", 50, "max number of messages to return")
 	cmd.Flags().StringVar(&afterStr, "after", "", "only messages after time (RFC3339 or YYYY-MM-DD)")
 	cmd.Flags().StringVar(&beforeStr, "before", "", "only messages before time (RFC3339 or YYYY-MM-DD)")

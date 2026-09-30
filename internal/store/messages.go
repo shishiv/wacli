@@ -356,13 +356,33 @@ type ListMessagesParams struct {
 	ChatJID   string
 	ChatJIDs  []string
 	SenderJID string
-	Limit     int
-	Before    *time.Time
-	After     *time.Time
-	FromMe    *bool
-	Asc       bool
-	Forwarded bool
-	Starred   bool
+	// SenderJIDs names one sender under several JIDs (a phone number and its LID).
+	SenderJIDs []string
+	Limit      int
+	Before     *time.Time
+	After      *time.Time
+	FromMe     *bool
+	Asc        bool
+	Forwarded  bool
+	Starred    bool
+	// AfterRowID keeps messages stored locally after that row; see MessageRowID.
+	AfterRowID int64
+}
+
+// MessageRowID returns the local row and timestamp of msgID in any of
+// chatJIDs. Rows are assigned in arrival order, which, unlike second-precision
+// timestamps, separates a reply from the message it answers.
+func (d *DB) MessageRowID(chatJIDs []string, msgID string) (rowID int64, ts time.Time, found bool, err error) {
+	query, args := appendStringFilter(`SELECT rowid, ts FROM messages WHERE msg_id = ?`, []any{msgID}, "chat_jid", "", chatJIDs)
+	var sec int64
+	err = d.sql.QueryRow(query+` ORDER BY rowid LIMIT 1`, args...).Scan(&rowID, &sec)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, time.Time{}, false, nil
+	}
+	if err != nil {
+		return 0, time.Time{}, false, err
+	}
+	return rowID, fromUnix(sec), true, nil
 }
 
 func (d *DB) ListMessages(p ListMessagesParams) ([]Message, error) {
@@ -417,10 +437,7 @@ func (p ListMessagesParams) messageFilter() (string, []any) {
 		filter += " AND m.ts < ?"
 		args = append(args, unix(*p.Before))
 	}
-	if strings.TrimSpace(p.SenderJID) != "" {
-		filter += " AND m.sender_jid = ?"
-		args = append(args, strings.TrimSpace(p.SenderJID))
-	}
+	filter, args = appendStringFilter(filter, args, "m.sender_jid", p.SenderJID, p.SenderJIDs)
 	if p.FromMe != nil {
 		filter += " AND m.from_me = ?"
 		args = append(args, boolToInt(*p.FromMe))
@@ -430,6 +447,10 @@ func (p ListMessagesParams) messageFilter() (string, []any) {
 	}
 	if p.Starred {
 		filter += " AND s.msg_id IS NOT NULL"
+	}
+	if p.AfterRowID > 0 {
+		filter += " AND m.rowid > ?"
+		args = append(args, p.AfterRowID)
 	}
 	return filter, args
 }

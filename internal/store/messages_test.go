@@ -357,6 +357,69 @@ func TestListMessagesFiltersMultipleChatJIDs(t *testing.T) {
 	}
 }
 
+func TestListMessagesFiltersSenderUnderPhoneAndLID(t *testing.T) {
+	db := openTestDB(t)
+	group := "120363000000000001@g.us"
+	pn := "15551234567@s.whatsapp.net"
+	lid := "123456789@lid"
+	base := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	if err := db.UpsertChat(group, "group", "Group", base); err != nil {
+		t.Fatalf("UpsertChat: %v", err)
+	}
+	rows := []UpsertMessageParams{
+		{ChatJID: group, MsgID: "bot-by-phone", SenderJID: pn, Timestamp: base, Text: "phone"},
+		{ChatJID: group, MsgID: "bot-by-lid", SenderJID: lid, Timestamp: base.Add(time.Second), Text: "hidden"},
+		{ChatJID: group, MsgID: "someone-else", SenderJID: "other@s.whatsapp.net", Timestamp: base.Add(2 * time.Second), Text: "other"},
+	}
+	for _, row := range rows {
+		if err := db.UpsertMessage(row); err != nil {
+			t.Fatalf("UpsertMessage %s: %v", row.MsgID, err)
+		}
+	}
+
+	msgs, err := db.ListMessages(ListMessagesParams{ChatJID: group, SenderJIDs: []string{pn, lid}, Limit: 10, Asc: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if got := messageIDs(msgs); got != "bot-by-phone,bot-by-lid" {
+		t.Fatalf("ids = %s", got)
+	}
+}
+
+func TestListMessagesAfterRowIDSeparatesSameSecondArrivals(t *testing.T) {
+	db := openTestDB(t)
+	chat := "120363000000000001@g.us"
+	second := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	if err := db.UpsertChat(chat, "group", "Group", second); err != nil {
+		t.Fatalf("UpsertChat: %v", err)
+	}
+	for _, row := range []UpsertMessageParams{
+		{ChatJID: chat, MsgID: "earlier-reply", SenderJID: "bot@s.whatsapp.net", Timestamp: second, Text: "previous step"},
+		{ChatJID: chat, MsgID: "mine", FromMe: true, Timestamp: second, Text: "gastei 10"},
+		{ChatJID: chat, MsgID: "reply", SenderJID: "bot@s.whatsapp.net", Timestamp: second, Text: "anotado"},
+	} {
+		if err := db.UpsertMessage(row); err != nil {
+			t.Fatalf("UpsertMessage %s: %v", row.MsgID, err)
+		}
+	}
+
+	rowID, ts, found, err := db.MessageRowID([]string{"other@s.whatsapp.net", chat}, "mine")
+	if err != nil || !found || !ts.Equal(second) {
+		t.Fatalf("MessageRowID = %d, %v, %v, %v", rowID, ts, found, err)
+	}
+	fromThem := false
+	msgs, err := db.ListMessages(ListMessagesParams{ChatJID: chat, AfterRowID: rowID, FromMe: &fromThem, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if got := messageIDs(msgs); got != "reply" {
+		t.Fatalf("ids = %s, want reply", got)
+	}
+	if _, _, found, err := db.MessageRowID([]string{chat}, "missing"); err != nil || found {
+		t.Fatalf("missing anchor: found=%v err=%v", found, err)
+	}
+}
+
 func TestListMessagesMultipleChatJIDsKeepsOrderFiltersAndLimit(t *testing.T) {
 	db := openTestDB(t)
 	pn := "15551234567@s.whatsapp.net"
