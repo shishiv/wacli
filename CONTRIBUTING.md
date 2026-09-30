@@ -22,7 +22,7 @@ Thank you for your interest in contributing to `wacli`! This document outlines o
 
 - **Go**: `1.27.0` (pinned security floor).
 - **Node.js**: `>= 24`
-- **pnpm**: `11.x`
+- **pnpm**: `12.x` (pinned by `packageManager` in `package.json`)
 - **C Compiler**: GCC or Clang (required for SQLite CGO).
 
 ### Common Commands
