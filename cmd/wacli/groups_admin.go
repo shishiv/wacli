@@ -35,47 +35,44 @@ func newGroupsCreateCmd(flags *rootFlags) *cobra.Command {
 			if err := flags.requireWritable(); err != nil {
 				return err
 			}
+			if _, err := parseGroupUserJIDs(users); err != nil {
+				return err
+			}
+			req := groupCreateRequest{
+				Name:         name,
+				Users:        users,
+				AnnounceOnly: announceOnly,
+				Locked:       locked,
+				JoinApproval: joinApproval,
+				Community:    parent,
+				LinkedParent: linkedParent,
+			}
 			ctx, cancel := withTimeout(context.Background(), flags)
 			defer cancel()
 
+			var info *types.GroupInfo
 			a, lk, err := newApp(ctx, flags, true, false)
 			if err != nil {
-				return err
-			}
-			defer closeApp(a, lk)
-
-			if err := a.EnsureAuthed(); err != nil {
-				return err
-			}
-			if err := a.Connect(ctx, false, nil); err != nil {
-				return err
-			}
-
-			participants, err := parseGroupUserJIDs(users)
-			if err != nil {
-				return err
-			}
-			var parentJID types.JID
-			if strings.TrimSpace(linkedParent) != "" {
-				parentJID, err = parseGroupJID(linkedParent)
-				if err != nil {
-					return fmt.Errorf("parse --linked-parent: %w", err)
+				// sync --follow holds the store; let it create the group.
+				resp, delegated, delegateErr := tryDelegateSend(ctx, flags, err, sendDelegateRequest{Kind: groupCreateKind, GroupCreate: &req})
+				if !delegated {
+					return err
 				}
-			}
-			info, err := a.WA().CreateGroup(ctx, wa.CreateGroupRequest{
-				Name:                   name,
-				Participants:           participants,
-				IsAnnounce:             announceOnly,
-				IsLocked:               locked,
-				IsJoinApprovalRequired: joinApproval,
-				IsParent:               parent,
-				LinkedParentJID:        parentJID,
-			})
-			if err != nil {
-				return err
-			}
-			if info != nil {
-				_ = persistGroupInfo(ctx, a.DB(), a.WA(), info)
+				if delegateErr != nil {
+					return delegateErr
+				}
+				info = resp.Group
+			} else {
+				defer closeApp(a, lk)
+				if err := a.EnsureAuthed(ctx); err != nil {
+					return err
+				}
+				if err := a.Connect(ctx, false, nil); err != nil {
+					return err
+				}
+				if info, err = createGroup(ctx, a, req); err != nil {
+					return err
+				}
 			}
 
 			if flags.asJSON {
@@ -121,7 +118,7 @@ func newGroupsTopicCmd(flags *rootFlags, use string) *cobra.Command {
 			}
 			defer closeApp(a, lk)
 
-			if err := a.EnsureAuthed(); err != nil {
+			if err := a.EnsureAuthed(ctx); err != nil {
 				return err
 			}
 			if err := a.Connect(ctx, false, nil); err != nil {
@@ -188,7 +185,7 @@ func newGroupsToggleCmd(flags *rootFlags, use, short string, apply func(context.
 			}
 			defer closeApp(a, lk)
 
-			if err := a.EnsureAuthed(); err != nil {
+			if err := a.EnsureAuthed(ctx); err != nil {
 				return err
 			}
 			if err := a.Connect(ctx, false, nil); err != nil {
@@ -272,7 +269,7 @@ func newGroupsRequestsListCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer closeApp(a, lk)
 
-			if err := a.EnsureAuthed(); err != nil {
+			if err := a.EnsureAuthed(ctx); err != nil {
 				return err
 			}
 			if err := a.Connect(ctx, false, nil); err != nil {
@@ -324,7 +321,7 @@ func newGroupsRequestsActionCmd(flags *rootFlags, action string) *cobra.Command 
 			}
 			defer closeApp(a, lk)
 
-			if err := a.EnsureAuthed(); err != nil {
+			if err := a.EnsureAuthed(ctx); err != nil {
 				return err
 			}
 			if err := a.Connect(ctx, false, nil); err != nil {
@@ -374,6 +371,48 @@ func parseOnOffFlags(cmd *cobra.Command, on, off bool) (bool, error) {
 		return false, fmt.Errorf("--off=false does not select a mode; use --on to enable")
 	}
 	return false, nil
+}
+
+// groupCreateRequest is the groups create input, also carried over the send
+// delegate socket when sync --follow owns the store.
+type groupCreateRequest struct {
+	Name         string   `json:"name"`
+	Users        []string `json:"users,omitempty"`
+	AnnounceOnly bool     `json:"announce_only,omitempty"`
+	Locked       bool     `json:"locked,omitempty"`
+	JoinApproval bool     `json:"join_approval,omitempty"`
+	Community    bool     `json:"community,omitempty"`
+	LinkedParent string   `json:"linked_parent,omitempty"`
+}
+
+func createGroup(ctx context.Context, a *appcore.App, req groupCreateRequest) (*types.GroupInfo, error) {
+	participants, err := parseGroupUserJIDs(req.Users)
+	if err != nil {
+		return nil, err
+	}
+	var parentJID types.JID
+	if strings.TrimSpace(req.LinkedParent) != "" {
+		parentJID, err = parseGroupJID(req.LinkedParent)
+		if err != nil {
+			return nil, fmt.Errorf("parse --linked-parent: %w", err)
+		}
+	}
+	info, err := a.WA().CreateGroup(ctx, wa.CreateGroupRequest{
+		Name:                   req.Name,
+		Participants:           participants,
+		IsAnnounce:             req.AnnounceOnly,
+		IsLocked:               req.Locked,
+		IsJoinApprovalRequired: req.JoinApproval,
+		IsParent:               req.Community,
+		LinkedParentJID:        parentJID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if info != nil {
+		_ = persistGroupInfo(ctx, a.DB(), a.WA(), info)
+	}
+	return info, nil
 }
 
 func parseGroupJID(raw string) (types.JID, error) {

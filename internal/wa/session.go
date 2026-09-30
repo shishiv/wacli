@@ -10,9 +10,10 @@ import (
 	"github.com/openclaw/wacli/internal/sqliteutil"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
-func (c *Client) init() error {
+func (c *Client) init() (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -25,6 +26,11 @@ func (c *Client) init() error {
 	if err != nil {
 		return fmt.Errorf("open whatsmeow store: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			_ = container.Close()
+		}
+	}()
 	if err := sqliteutil.ChmodFiles(c.opts.StorePath, 0o600); err != nil {
 		return err
 	}
@@ -49,5 +55,19 @@ func (c *Client) init() error {
 	// "Waiting for this message" indefinitely because whatsmeow can't find the
 	// original plaintext to re-encrypt when the retry arrives.
 	c.client.UseRetryMessageStore = true
+	cli := c.client
+	onEmptyKey := func(keyID []byte) {
+		cli.DangerousInternals().DispatchEvent(&AppStateKeyUnavailable{KeyID: keyID})
+	}
+	guardAppStateKeys(deviceStore, c.opts.KeyStateStore, onEmptyKey)
+	cli.AddEventHandler(func(evt any) {
+		if _, ok := evt.(*events.PairSuccess); ok {
+			guardAppStateKeys(cli.Store, c.opts.KeyStateStore, onEmptyKey)
+		}
+	})
+	// Let whatsmeow own bounded primary-device retries and cancellation for
+	// eligible decryption failures.
+	c.client.AutomaticMessageRerequestFromPhone = true
+	c.container = container
 	return nil
 }

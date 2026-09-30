@@ -125,7 +125,7 @@ func newSendSelectCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer closeApp(a, lk)
 
-			if err := a.EnsureAuthed(); err != nil {
+			if err := a.EnsureAuthed(ctx); err != nil {
 				return err
 			}
 			toJID, err := resolveRecipient(a, to, recipientOptions{pick: pick, asJSON: flags.asJSON})
@@ -528,7 +528,7 @@ func executeDelegatedButtonListSelect(ctx context.Context, a *app.App, req sendD
 		if err := a.InjectParsedMessage(ctx, wa.ParsedMessage{
 			Chat:      toJID,
 			ID:        sentID,
-			SenderJID: toJID.String(),
+			SenderJID: "",
 			Timestamp: now,
 			FromMe:    true,
 			Text:      selected.DisplayText,

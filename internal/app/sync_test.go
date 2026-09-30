@@ -73,95 +73,6 @@ func TestLiveSyncWarnsOnEncryptedReactionDecryptFailure(t *testing.T) {
 	}
 }
 
-func TestLiveSyncDecryptsSecretMessageEditBeforeStorage(t *testing.T) {
-	a := newTestApp(t)
-	f := newFakeWA()
-	a.wa = f
-
-	chat := types.JID{User: "123", Server: types.DefaultUserServer}
-	base := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
-	var messagesStored atomic.Int64
-	a.handleLiveSyncMessage(context.Background(), SyncOptions{}, &events.Message{
-		Info: types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
-			ID:            "original-id",
-			Timestamp:     base,
-		},
-		Message: &waProto.Message{Conversation: proto.String("original body")},
-	}, &messagesStored, func(string, string) {}, nil)
-
-	f.decryptSecretFunc = func(_ *events.Message) (*waE2E.Message, error) {
-		return decryptedProtocolEdit("edited body"), nil
-	}
-	a.handleLiveSyncMessage(context.Background(), SyncOptions{}, &events.Message{
-		Info: types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
-			ID:            "edit-event",
-			Timestamp:     base.Add(time.Minute),
-		},
-		Message: secretEditEnvelope(chat, "original-id"),
-	}, &messagesStored, func(string, string) {}, nil)
-
-	msg, err := a.db.GetMessage(chat.String(), "original-id")
-	if err != nil {
-		t.Fatalf("GetMessage edited original: %v", err)
-	}
-	if msg.Text != "edited body" || !msg.Edited {
-		t.Fatalf("encrypted edit was not applied: %+v", msg)
-	}
-	if n, err := a.db.CountMessages(); err != nil || n != 1 {
-		t.Fatalf("expected only the original row, got %d (err=%v)", n, err)
-	}
-}
-
-func TestLiveSyncRejectsSecretMessageEditTargetMismatch(t *testing.T) {
-	a := newTestApp(t)
-	f := newFakeWA()
-	a.wa = f
-
-	chat := types.JID{User: "123", Server: types.DefaultUserServer}
-	base := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
-	var messagesStored atomic.Int64
-	a.handleLiveSyncMessage(context.Background(), SyncOptions{}, &events.Message{
-		Info: types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
-			ID:            "original-id",
-			Timestamp:     base,
-		},
-		Message: &waProto.Message{Conversation: proto.String("original body")},
-	}, &messagesStored, func(string, string) {}, nil)
-
-	f.decryptSecretFunc = func(_ *events.Message) (*waE2E.Message, error) {
-		decrypted := decryptedProtocolEdit("wrong body")
-		decrypted.ProtocolMessage.Key = &waCommon.MessageKey{ID: proto.String("other-id")}
-		return decrypted, nil
-	}
-	out := captureStderr(t, func() {
-		a.handleLiveSyncMessage(context.Background(), SyncOptions{}, &events.Message{
-			Info: types.MessageInfo{
-				MessageSource: types.MessageSource{Chat: chat, Sender: chat},
-				ID:            "edit-event",
-				Timestamp:     base.Add(time.Minute),
-			},
-			Message: secretEditEnvelope(chat, "original-id"),
-		}, &messagesStored, func(string, string) {}, nil)
-	})
-
-	if !strings.Contains(out, "target does not match decrypted payload") {
-		t.Fatalf("expected target mismatch warning, got:\n%s", out)
-	}
-	msg, err := a.db.GetMessage(chat.String(), "original-id")
-	if err != nil {
-		t.Fatalf("GetMessage original: %v", err)
-	}
-	if msg.Text != "original body" || msg.Edited {
-		t.Fatalf("mismatched edit changed original: %+v", msg)
-	}
-	if n, err := a.db.CountMessages(); err != nil || n != 1 {
-		t.Fatalf("expected only the original row, got %d (err=%v)", n, err)
-	}
-}
-
 func TestLiveSyncIncrementsUnreadCountForIncomingMessages(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
@@ -647,180 +558,6 @@ func TestAppStateCallLogDeleteRemovesStoredCallEvent(t *testing.T) {
 	}
 }
 
-type appStateContextWA struct {
-	*fakeWA
-	fetchAppState           func(context.Context, string, bool, bool) error
-	requestAppStateRecovery func(context.Context, string) (types.MessageID, error)
-}
-
-func (f *appStateContextWA) FetchAppState(ctx context.Context, name string, fullSync, onlyIfNotSynced bool) error {
-	return f.fetchAppState(ctx, name, fullSync, onlyIfNotSynced)
-}
-
-func (f *appStateContextWA) RequestAppStateRecovery(ctx context.Context, name string) (types.MessageID, error) {
-	return f.requestAppStateRecovery(ctx, name)
-}
-
-func TestAppStateLTHashMismatchRecoveryGetsFreshTimeoutAfterFullSyncExpires(t *testing.T) {
-	a := newTestApp(t)
-	var fetchErr error
-	var recoveryErr error
-	recoveryHasDeadline := false
-	recoveryCalls := 0
-	f := &appStateContextWA{fakeWA: newFakeWA()}
-	f.fetchAppState = func(ctx context.Context, name string, fullSync, onlyIfNotSynced bool) error {
-		<-ctx.Done()
-		fetchErr = ctx.Err()
-		return fetchErr
-	}
-	f.requestAppStateRecovery = func(ctx context.Context, name string) (types.MessageID, error) {
-		recoveryCalls++
-		recoveryErr = ctx.Err()
-		_, recoveryHasDeadline = ctx.Deadline()
-		return types.MessageID("recovery-req"), recoveryErr
-	}
-	a.wa = f
-
-	var recoveries sync.Map
-	name := string(appstate.WAPatchRegularLow)
-	recoveries.Store(name, struct{}{})
-	a.recoverAppStateAfterLTHashMismatch(context.Background(), name, &recoveries, 10*time.Millisecond)
-
-	if !errors.Is(fetchErr, context.DeadlineExceeded) {
-		t.Fatalf("full sync context error = %v, want deadline exceeded", fetchErr)
-	}
-	if recoveryCalls != 1 {
-		t.Fatalf("recovery calls = %d, want 1", recoveryCalls)
-	}
-	if recoveryErr != nil {
-		t.Fatalf("recovery context was already expired: %v", recoveryErr)
-	}
-	if !recoveryHasDeadline {
-		t.Fatal("recovery context has no timeout")
-	}
-}
-
-func TestAppStateLTHashMismatchRecoveryRetainsParentCancellation(t *testing.T) {
-	a := newTestApp(t)
-	parentCtx, cancelParent := context.WithCancel(context.Background())
-	defer cancelParent()
-	recoveryStarted := make(chan struct{})
-	var recoveryErr error
-	f := &appStateContextWA{fakeWA: newFakeWA()}
-	f.fetchAppState = func(ctx context.Context, name string, fullSync, onlyIfNotSynced bool) error {
-		return errors.New("full sync failed")
-	}
-	f.requestAppStateRecovery = func(ctx context.Context, name string) (types.MessageID, error) {
-		close(recoveryStarted)
-		<-ctx.Done()
-		recoveryErr = ctx.Err()
-		return "", recoveryErr
-	}
-	a.wa = f
-
-	var recoveries sync.Map
-	name := string(appstate.WAPatchRegularLow)
-	recoveries.Store(name, struct{}{})
-	done := make(chan struct{})
-	go func() {
-		a.recoverAppStateAfterLTHashMismatch(parentCtx, name, &recoveries, 100*time.Millisecond)
-		close(done)
-	}()
-	select {
-	case <-recoveryStarted:
-	case <-time.After(time.Second):
-		t.Fatal("app state recovery fallback did not start")
-	}
-	cancelParent()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("app state recovery did not stop after parent cancellation")
-	}
-
-	if !errors.Is(recoveryErr, context.Canceled) {
-		t.Fatalf("recovery context error = %v, want parent cancellation", recoveryErr)
-	}
-	if _, loaded := recoveries.Load(name); loaded {
-		t.Fatal("recovery guard remained set after parent cancellation")
-	}
-}
-
-func TestAppStateLTHashMismatchAttemptsFullSyncFirst(t *testing.T) {
-	a := newTestApp(t)
-	f := newFakeWA()
-	a.wa = f
-
-	var recoveries sync.Map
-	err := fmt.Errorf("failed to verify patch v5848: %w", appstate.ErrMismatchingLTHash)
-	a.handleAppStateSyncError(context.Background(), &events.AppStateSyncError{
-		Name:  appstate.WAPatchRegularLow,
-		Error: err,
-	}, &recoveries)
-
-	waitForCondition(t, time.Second, func() bool {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		return len(f.appStateFetches) == 1
-	})
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if got := f.appStateFetches[0]; got.name != string(appstate.WAPatchRegularLow) || !got.fullSync {
-		t.Fatalf("unexpected fetch = %+v", got)
-	}
-	if len(f.appStateRecoveries) != 0 {
-		t.Fatalf("recovery requested when full sync succeeded: %v", f.appStateRecoveries)
-	}
-}
-
-func TestAppStateLTHashMismatchRequestsRecoveryWhenFullSyncFails(t *testing.T) {
-	a := newTestApp(t)
-	f := newFakeWA()
-	a.wa = f
-	f.appStateFetchErr = appstate.ErrMismatchingLTHash
-
-	var recoveries sync.Map
-	err := fmt.Errorf("failed to verify patch v5848: %w", appstate.ErrMismatchingLTHash)
-	a.handleAppStateSyncError(context.Background(), &events.AppStateSyncError{
-		Name:  appstate.WAPatchRegularLow,
-		Error: err,
-	}, &recoveries)
-	a.handleAppStateSyncError(context.Background(), &events.AppStateSyncError{
-		Name:  appstate.WAPatchRegularLow,
-		Error: err,
-	}, &recoveries)
-
-	waitForCondition(t, time.Second, func() bool {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		return len(f.appStateRecoveries) == 1
-	})
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if got := f.appStateRecoveries[0]; got != string(appstate.WAPatchRegularLow) {
-		t.Fatalf("recovery collection = %q", got)
-	}
-}
-
-func TestAppStateNonLTHashErrorDoesNotRequestRecovery(t *testing.T) {
-	a := newTestApp(t)
-	f := newFakeWA()
-	a.wa = f
-
-	var recoveries sync.Map
-	a.handleAppStateSyncError(context.Background(), &events.AppStateSyncError{
-		Name:  appstate.WAPatchRegularLow,
-		Error: errors.New("mismatching patch MAC"),
-	}, &recoveries)
-
-	time.Sleep(20 * time.Millisecond)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.appStateRecoveries) != 0 {
-		t.Fatalf("recovery requests = %v, want none", f.appStateRecoveries)
-	}
-}
-
 func TestStarEventStoresAndClearsStarredState(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
@@ -976,7 +713,7 @@ func TestSyncFetchesChatAppStateDeltasAfterConnect(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertMessage: %v", err)
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if onlyIfNotSynced {
 			return nil
 		}
@@ -1124,7 +861,7 @@ func TestChatStatePersistenceHandlerCoversOtherCollectionDuringWrite(t *testing.
 			t.Fatalf("UpsertChat: %v", err)
 		}
 	}
-	f.connectEvents = []interface{}{&events.Mute{
+	f.connectEvents = []any{&events.Mute{
 		JID:    remoteMute,
 		Action: &waSyncAction.MuteAction{Muted: proto.Bool(true), MuteEndTimestamp: proto.Int64(-1)},
 	}}
@@ -1165,6 +902,8 @@ func TestChatStatePersistenceHandlerCoversOtherCollectionDuringWrite(t *testing.
 	if required {
 		t.Fatal("successful connect-time persistence left replay debt")
 	}
+	// Closing removes the app-owned observer, but cannot hide a leaked temporary handler.
+	a.Close()
 	f.mu.Lock()
 	handlerCount := len(f.handlers)
 	f.mu.Unlock()
@@ -1385,7 +1124,7 @@ func TestArchiveChatPersistsAppStateDeltasFetchedBeforeWrite(t *testing.T) {
 			t.Fatalf("UpsertChat: %v", err)
 		}
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		return &events.Archive{
 			JID:    pending,
 			Action: &waSyncAction.ArchiveChatAction{Archived: proto.Bool(true)},
@@ -1417,7 +1156,7 @@ func TestArchiveChatMarksRecoveryBeforeCursorAdvancingFetch(t *testing.T) {
 	a.wa = f
 
 	markerSeen := false
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		var err error
 		markerSeen, err = a.db.AppStateRecoveryRequired(name)
 		if err != nil {
@@ -1446,7 +1185,7 @@ func TestArchiveChatDoesNotAttributeConcurrentCollectionEvents(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
 	a.wa = f
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		a.handleAppStatePersistenceEvent(context.Background(), evt, nil)
 	})
 	defer f.RemoveEventHandler(handlerID)
@@ -1475,7 +1214,7 @@ func TestArchiveChatDoesNotAttributeConcurrentCollectionEvents(t *testing.T) {
 		t.Fatalf("create failure trigger: %v", err)
 	}
 	unrelatedMarkerSeen := false
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		f.emit(&events.Mute{
 			JID:    remoteMute,
 			Action: &waSyncAction.MuteAction{Muted: proto.Bool(true)},
@@ -1524,7 +1263,7 @@ func TestArchiveChatDoesNotClearConcurrentSameCollectionFailure(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
 	a.wa = f
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		a.handleAppStatePersistenceEvent(context.Background(), evt, nil)
 	})
 	defer f.RemoveEventHandler(handlerID)
@@ -1552,7 +1291,7 @@ func TestArchiveChatDoesNotClearConcurrentSameCollectionFailure(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		f.emit(&events.Archive{
 			JID:    remoteArchive,
 			Action: &waSyncAction.ArchiveChatAction{Archived: proto.Bool(true)},
@@ -1592,11 +1331,11 @@ func TestArchiveChatOrdersFetchedEventsBeforeNewerLiveEvents(t *testing.T) {
 			t.Fatalf("UpsertChat: %v", err)
 		}
 	}
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		a.handleAppStatePersistenceEvent(context.Background(), evt, nil)
 	})
 	defer f.RemoveEventHandler(handlerID)
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		f.emit(&events.Archive{
 			JID:       remoteArchive,
 			Timestamp: when.Add(2 * time.Minute),
@@ -1625,7 +1364,7 @@ func TestArchiveChatPersistsRecoveredMarkUnread(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
 	a.wa = f
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		switch v := evt.(type) {
 		case *events.MarkChatAsRead:
 			a.handleAppStatePersistenceEvent(context.Background(), v, nil)
@@ -1643,7 +1382,7 @@ func TestArchiveChatPersistsRecoveredMarkUnread(t *testing.T) {
 			t.Fatalf("UpsertChat: %v", err)
 		}
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		return &events.MarkChatAsRead{
 			JID:       remote,
 			Timestamp: when,
@@ -1667,7 +1406,7 @@ func TestMarkChatReadOrdersPreSendReceiptBeforeLocalMutation(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
 	a.wa = f
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		if receipt, ok := evt.(*events.Receipt); ok {
 			a.handleReceiptPersistenceEvent(context.Background(), receipt)
 		}
@@ -1824,7 +1563,7 @@ func TestArchiveChatOrdersPostSendEventsBeforeNewerLiveEventDuringApply(t *testi
 	a := newTestApp(t)
 	f := newFakeWA()
 	a.wa = f
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		a.handleAppStatePersistenceEvent(context.Background(), evt, nil)
 	})
 	defer f.RemoveEventHandler(handlerID)
@@ -1834,7 +1573,7 @@ func TestArchiveChatOrdersPostSendEventsBeforeNewerLiveEventDuringApply(t *testi
 	if err := a.db.UpsertChat(target.String(), "dm", "Alice", when); err != nil {
 		t.Fatalf("UpsertChat: %v", err)
 	}
-	f.archiveEvent = func() interface{} {
+	f.archiveEvent = func() any {
 		f.emit(&events.Archive{
 			JID:       target,
 			Timestamp: nowUTC().Add(time.Minute),
@@ -1863,7 +1602,7 @@ func TestArchiveChatReplaysEventDispatchedAfterWriteCompletion(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
 	a.wa = f
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		a.handleAppStatePersistenceEvent(context.Background(), evt, nil)
 	})
 	defer f.RemoveEventHandler(handlerID)
@@ -1873,7 +1612,7 @@ func TestArchiveChatReplaysEventDispatchedAfterWriteCompletion(t *testing.T) {
 	if err := a.db.UpsertChat(target.String(), "dm", "Alice", when); err != nil {
 		t.Fatalf("UpsertChat: %v", err)
 	}
-	f.archiveEvent = func() interface{} {
+	f.archiveEvent = func() any {
 		return &events.Archive{
 			JID:       target,
 			Timestamp: when.Add(2 * time.Minute),
@@ -1903,7 +1642,7 @@ func TestArchiveChatReplaysEventDispatchedAfterWriteCompletion(t *testing.T) {
 	if !required {
 		t.Fatal("post-write recovery debt was cleared before delayed dispatch")
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if !fullSync {
 			t.Errorf("recovery fetch fullSync = false")
 		}
@@ -1949,7 +1688,7 @@ func TestConcurrentChatStateWriteCannotReplaySnapshotFromBeforeEarlierWrite(t *t
 	firstWriteStarted := make(chan struct{})
 	releaseFirstWrite := make(chan struct{})
 	var writeCount atomic.Int32
-	f.archiveEvent = func() interface{} {
+	f.archiveEvent = func() any {
 		if writeCount.Add(1) == 1 {
 			close(firstWriteStarted)
 			<-releaseFirstWrite
@@ -1959,7 +1698,7 @@ func TestConcurrentChatStateWriteCannotReplaySnapshotFromBeforeEarlierWrite(t *t
 
 	secondFetchStarted := make(chan struct{})
 	var fetchCount atomic.Int32
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if fetchCount.Add(1) != 2 {
 			return nil
 		}
@@ -2040,7 +1779,7 @@ func TestArchiveChatPersistsPostSendEventsBeforeClearingIntent(t *testing.T) {
 		}
 	}
 	markerSeen := false
-	f.archiveEvent = func() interface{} {
+	f.archiveEvent = func() any {
 		var err error
 		markerSeen, err = a.db.AppStateRecoveryRequired(string(appstate.WAPatchRegularLow))
 		if err != nil {
@@ -2078,7 +1817,7 @@ func TestLocalAppStateWriteFinishesAfterRequestCancellation(t *testing.T) {
 	a := newTestApp(t)
 	blockerStarted := make(chan struct{})
 	releaseBlocker := make(chan struct{})
-	go a.appStatePersist.enqueue(func() {
+	go enqueueAppStateTask(&a.appStatePersist, func() {
 		close(blockerStarted)
 		<-releaseBlocker
 	})
@@ -2117,7 +1856,7 @@ func TestArchiveChatMarkerFailureReplaysReentrantLiveEventInOrder(t *testing.T) 
 	a := newTestApp(t)
 	f := newFakeWA()
 	a.wa = f
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		a.handleAppStatePersistenceEvent(context.Background(), evt, nil)
 	})
 	defer f.RemoveEventHandler(handlerID)
@@ -2135,7 +1874,7 @@ func TestArchiveChatMarkerFailureReplaysReentrantLiveEventInOrder(t *testing.T) 
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer raw.Close()
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if _, err := raw.Exec(`
 			CREATE TRIGGER fail_live_recovery_intent
 			BEFORE INSERT ON app_state_recovery_intents
@@ -2194,7 +1933,7 @@ func TestMuteChatPersistsOtherAppStateDeltasFetchedBeforeWrite(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertMessage: %v", err)
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		return &events.DeleteForMe{
 			ChatJID:   pending,
 			MessageID: "pending-delete",
@@ -2299,7 +2038,7 @@ func TestArchiveChatWaitsForFullReplayPersistence(t *testing.T) {
 	}
 	replayStarted := make(chan struct{})
 	releaseReplay := make(chan struct{})
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if !fullSync {
 			return nil
 		}
@@ -2382,7 +2121,7 @@ func TestArchiveChatReplaysAfterRecoveryPersistenceFailure(t *testing.T) {
 		fmt.Errorf("failed to verify regular_low patch: %w", appstate.ErrMismatchingLTHash),
 		nil,
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if !fullSync {
 			return nil
 		}
@@ -2413,7 +2152,7 @@ func TestArchiveChatReplaysAfterRecoveryPersistenceFailure(t *testing.T) {
 	}
 	defer reopened.Close()
 	replay := newFakeWA()
-	replay.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	replay.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if name != string(appstate.WAPatchRegularLow) || !fullSync || onlyIfNotSynced {
 			return nil
 		}
@@ -2478,7 +2217,7 @@ func TestArchiveChatMarksReplayAfterDeltaPersistenceFailure(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		return &events.Archive{
 			JID:       remoteChat,
 			Timestamp: when.Add(time.Minute),
@@ -2527,7 +2266,7 @@ func TestArchiveChatUsesSynchronousFullReplayForMismatch(t *testing.T) {
 	f := newFakeWA()
 	a.wa = f
 	var recoveries sync.Map
-	handlerID := f.AddEventHandler(func(evt interface{}) {
+	handlerID := f.AddEventHandler(func(evt any) {
 		if syncErr, ok := evt.(*events.AppStateSyncError); ok {
 			a.handleAppStateSyncError(context.Background(), syncErr, &recoveries)
 		}
@@ -2829,7 +2568,7 @@ func TestChatStateSerializationRespectsContextCancellation(t *testing.T) {
 	}
 	replayStarted := make(chan struct{})
 	releaseReplay := make(chan struct{})
-	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) interface{} {
+	f.appStateFetchEvent = func(name string, fullSync, onlyIfNotSynced bool) any {
 		if fullSync {
 			close(replayStarted)
 			<-releaseReplay
@@ -2986,79 +2725,6 @@ func TestHistorySyncEditedMessageSurvivesOlderOriginal(t *testing.T) {
 	}
 }
 
-func TestHistorySyncDecryptsSecretMessageEditBeforeStorage(t *testing.T) {
-	a := newTestApp(t)
-	f := newFakeWA()
-	a.wa = f
-
-	chat := types.JID{User: "123", Server: types.DefaultUserServer}
-	base := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
-	f.decryptSecretFunc = func(_ *events.Message) (*waE2E.Message, error) {
-		return decryptedProtocolEdit("edited body"), nil
-	}
-	editMsg := &waWeb.WebMessageInfo{
-		Key: &waCommon.MessageKey{
-			RemoteJID: proto.String(chat.String()),
-			FromMe:    proto.Bool(false),
-			ID:        proto.String("edit-event"),
-		},
-		MessageTimestamp: proto.Uint64(uint64(base.Add(time.Minute).Unix())),
-		Message:          secretEditEnvelope(chat, "original-id"),
-	}
-	originalMsg := &waWeb.WebMessageInfo{
-		Key: &waCommon.MessageKey{
-			RemoteJID: proto.String(chat.String()),
-			FromMe:    proto.Bool(false),
-			ID:        proto.String("original-id"),
-		},
-		MessageTimestamp: proto.Uint64(uint64(base.Unix())),
-		Message:          &waProto.Message{Conversation: proto.String("original body")},
-	}
-	history := &events.HistorySync{Data: &waHistorySync.HistorySync{
-		SyncType: waHistorySync.HistorySync_FULL.Enum(),
-		Conversations: []*waHistorySync.Conversation{{
-			ID:       proto.String(chat.String()),
-			Messages: []*waHistorySync.HistorySyncMsg{{Message: editMsg}, {Message: originalMsg}},
-		}},
-	}}
-
-	var messagesStored atomic.Int64
-	var lastEvent atomic.Int64
-	a.handleHistorySync(context.Background(), SyncOptions{}, history, &messagesStored, &lastEvent, func(string, string) {})
-
-	msg, err := a.db.GetMessage(chat.String(), "original-id")
-	if err != nil {
-		t.Fatalf("GetMessage edited original: %v", err)
-	}
-	if msg.Text != "edited body" || !msg.Edited {
-		t.Fatalf("encrypted history edit was not applied: %+v", msg)
-	}
-	if n, err := a.db.CountMessages(); err != nil || n != 1 {
-		t.Fatalf("expected only the original row, got %d (err=%v)", n, err)
-	}
-}
-
-func secretEditEnvelope(chat types.JID, targetID string) *waProto.Message {
-	return &waProto.Message{
-		SecretEncryptedMessage: &waE2E.SecretEncryptedMessage{
-			TargetMessageKey: &waCommon.MessageKey{
-				ID:        proto.String(targetID),
-				RemoteJID: proto.String(chat.String()),
-			},
-			SecretEncType: waE2E.SecretEncryptedMessage_MESSAGE_EDIT.Enum(),
-		},
-	}
-}
-
-func decryptedProtocolEdit(body string) *waE2E.Message {
-	return &waE2E.Message{
-		ProtocolMessage: &waE2E.ProtocolMessage{
-			Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
-			EditedMessage: &waE2E.Message{Conversation: proto.String(body)},
-		},
-	}
-}
-
 func TestSyncStoresLiveAndHistoryMessages(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
@@ -3108,16 +2774,17 @@ func TestSyncStoresLiveAndHistoryMessages(t *testing.T) {
 		},
 	}
 
-	f.connectEvents = []interface{}{live, history}
+	f.connectEvents = []any{live, history}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	res, err := a.Sync(ctx, SyncOptions{
 		Mode:    SyncModeFollow,
 		AllowQR: false,
+		AfterConnect: func(context.Context) error {
+			cancel()
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
@@ -3139,7 +2806,7 @@ func TestSyncDownloadsHistoryNotificationBeforeProcessing(t *testing.T) {
 	base := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 	syncType := waE2E.HistorySyncType_INITIAL_BOOTSTRAP
 	notif := &waE2E.HistorySyncNotification{SyncType: &syncType}
-	f.connectEvents = []interface{}{&events.Message{
+	f.connectEvents = []any{&events.Message{
 		Message: &waProto.Message{
 			ProtocolMessage: &waProto.ProtocolMessage{
 				HistorySyncNotification: notif,
@@ -3472,16 +3139,17 @@ func TestSyncStoresDisplayText(t *testing.T) {
 		},
 	}
 
-	f.connectEvents = []interface{}{textMsg, imageMsg, replyMsg, reactionMsg}
+	f.connectEvents = []any{textMsg, imageMsg, replyMsg, reactionMsg}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	res, err := a.Sync(ctx, SyncOptions{
 		Mode:    SyncModeFollow,
 		AllowQR: false,
+		AfterConnect: func(context.Context) error {
+			cancel()
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
@@ -3597,7 +3265,7 @@ func TestSyncMediaEnqueueUsesBoundedBackpressure(t *testing.T) {
 	}
 
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 600; i++ {
+	for i := range 600 {
 		f.connectEvents = append(f.connectEvents, &events.Message{
 			Info: types.MessageInfo{
 				MessageSource: types.MessageSource{
@@ -3666,7 +3334,7 @@ func TestSyncOnceDrainsMediaBeforeExit(t *testing.T) {
 	const n = 12
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	ids := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := fmt.Sprintf("media-%02d", i)
 		ids = append(ids, id)
 		f.connectEvents = append(f.connectEvents, &events.Message{

@@ -154,7 +154,7 @@ func TestSendTextToOwnPNRejectsRegisteredLID(t *testing.T) {
 	var stderr bytes.Buffer
 	target := warmupRecipient(context.Background(), warmup, pn, &stderr)
 	sender := &recordingTextSender{linkedJID: pn.String(), linkedLID: lid}
-	_, err := sendTextMessageWithSender(context.Background(), sender, openSendTestDB(t), target, "self-test", "", "", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, openSendTestDB(t), target, "self-test", "", "", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err == nil || !strings.Contains(err.Error(), "linked account itself is not supported") {
 		t.Fatalf("sendTextMessageWithSender error = %v, want self-send rejection", err)
 	}
@@ -170,12 +170,25 @@ func TestSendTextToOwnPNRejectsWithoutRegistrationCanonicalization(t *testing.T)
 	pn := types.NewJID("15551234567", types.DefaultUserServer)
 	sender := &recordingTextSender{linkedJID: pn.String()}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, openSendTestDB(t), pn, "self-test", "", "", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, openSendTestDB(t), pn, "self-test", "", "", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err == nil || !strings.Contains(err.Error(), "linked account itself is not supported") {
 		t.Fatalf("sendTextMessageWithSender error = %v, want self-send rejection", err)
 	}
 	if sender.textCalls != 0 || sender.protoCalls != 0 || sender.resolveLIDCalls != 0 {
 		t.Fatalf("self-send reached protocol path: text=%d proto=%d resolve=%d", sender.textCalls, sender.protoCalls, sender.resolveLIDCalls)
+	}
+}
+
+func TestSendTextToOwnPNAllowsExplicitOptIn(t *testing.T) {
+	pn := types.NewJID("15551234567", types.DefaultUserServer)
+	sender := &recordingTextSender{linkedJID: pn.String()}
+
+	_, err := sendTextMessageWithSender(context.Background(), sender, openSendTestDB(t), pn, "self-test", "", "", nil, nil, textEphemeralOptions{}, textSendOptions{allowSelf: true})
+	if err != nil {
+		t.Fatalf("sendTextMessageWithSender: %v", err)
+	}
+	if sender.textCalls != 1 || sender.textRecipient != pn || sender.text != "self-test" {
+		t.Fatalf("self-send protocol call = %d to %s text %q, want one call to %s", sender.textCalls, sender.textRecipient, sender.text, pn)
 	}
 }
 
@@ -220,7 +233,7 @@ func TestResolveRecipientUsesContactAlias(t *testing.T) {
 	if err := db.UpsertContact("15551234567@s.whatsapp.net", "15551234567", "Alice", "", "", ""); err != nil {
 		t.Fatalf("UpsertContact: %v", err)
 	}
-	if err := db.SetAlias("15551234567@s.whatsapp.net", "mom"); err != nil {
+	if err := db.SetAlias([]string{"15551234567@s.whatsapp.net"}, "mom"); err != nil {
 		t.Fatalf("SetAlias: %v", err)
 	}
 
@@ -548,7 +561,7 @@ func TestSendTextMessageRejectsUnconstructableQuotesBeforeSending(t *testing.T) 
 			}
 			sender := &recordingTextSender{linkedJID: "15550000000@s.whatsapp.net"}
 
-			_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{})
+			_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{}, textSendOptions{})
 			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("error = %v, want %q", err, tc.wantError)
 			}
@@ -584,7 +597,7 @@ func TestSendTextMessageQuotesStoredDocument(t *testing.T) {
 	}
 	sender := &recordingTextSender{linkedJID: "15550000000@s.whatsapp.net"}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted-document", "15550000000@s.whatsapp.net", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted-document", "15550000000@s.whatsapp.net", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -633,7 +646,7 @@ func TestSendTextMessageReplySenderBypassesSelfLIDLookup(t *testing.T) {
 		groupInfo: &types.GroupInfo{AddressingMode: types.AddressingModeLID},
 	}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "15551234567:4@s.whatsapp.net", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "15551234567:4@s.whatsapp.net", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -651,7 +664,7 @@ func TestSendTextMessageAllowsUnsyncedGroupReplyWithSender(t *testing.T) {
 	chat := types.JID{User: "12345", Server: types.GroupServer}
 	sender := &recordingTextSender{linkedJID: "15550000000@s.whatsapp.net"}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "+15551234567", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "+15551234567", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -691,7 +704,7 @@ func TestSendTextMessageUsesLinkedLIDForOutgoingQuoteInLIDGroup(t *testing.T) {
 		groupInfo: &types.GroupInfo{AddressingMode: types.AddressingModeLID},
 	}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -727,7 +740,7 @@ func TestSendTextMessageKeepsStoredSenderForIncomingQuoteInLIDGroup(t *testing.T
 		groupInfo: &types.GroupInfo{AddressingMode: types.AddressingModeLID},
 	}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -760,7 +773,7 @@ func TestSendTextMessageUsesLinkedLIDForOutgoingQuoteInLIDChat(t *testing.T) {
 		linkedLID: types.JID{User: "123456789", Server: types.HiddenUserServer},
 	}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "reply", "quoted", "", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -800,6 +813,17 @@ func TestSendTextCommandExposesNoPreviewFlag(t *testing.T) {
 	cmd := newSendTextCmd(&rootFlags{})
 	if cmd.Flags().Lookup("no-preview") == nil {
 		t.Fatalf("missing --no-preview flag")
+	}
+}
+
+func TestSendTextCommandExposesAllowSelfFlag(t *testing.T) {
+	cmd := newSendTextCmd(&rootFlags{})
+	flag := cmd.Flags().Lookup("allow-self")
+	if flag == nil {
+		t.Fatalf("missing --allow-self flag")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("allow-self default = %q, want false", flag.DefValue)
 	}
 }
 
@@ -852,7 +876,7 @@ func TestBuildTextMessageUsesPlainConversationWithoutReplyOrPreview(t *testing.T
 	db := openSendTestDB(t)
 	chat := types.JID{User: "15551234567", Server: types.DefaultUserServer}
 
-	msg, plain, err := buildTextMessage(db, chat, "hello", "", "", nil, nil)
+	msg, plain, err := buildTextMessageWithSelf(db, chat, types.EmptyJID, "hello", "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildTextMessage: %v", err)
 	}
@@ -869,7 +893,7 @@ func TestBuildTextMessageAttachesMentions(t *testing.T) {
 	chat := types.JID{User: "12345", Server: types.GroupServer}
 	mentions := []string{"15551234567@s.whatsapp.net", "15557654321@s.whatsapp.net"}
 
-	msg, plain, err := buildTextMessage(db, chat, "hey @15551234567", "", "", nil, mentions)
+	msg, plain, err := buildTextMessageWithSelf(db, chat, types.EmptyJID, "hey @15551234567", "", "", "", nil, mentions)
 	if err != nil {
 		t.Fatalf("buildTextMessage: %v", err)
 	}
@@ -891,7 +915,7 @@ func TestSendTextMessageKeepsPlainTextFastPathWithoutEphemeral(t *testing.T) {
 	chat := types.JID{User: "15551234567", Server: types.DefaultUserServer}
 	sender := &recordingTextSender{}
 
-	id, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{})
+	id, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -911,7 +935,7 @@ func TestSendTextMessageUsesDefaultEphemeralExpirationForPrivateEphemeralWithout
 	chat := types.JID{User: "15551234567", Server: types.DefaultUserServer}
 	sender := &recordingTextSender{}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -935,7 +959,7 @@ func TestSendTextMessageRejectsExplicitZeroDuration(t *testing.T) {
 	chat := types.JID{User: "15551234567", Server: types.DefaultUserServer}
 	sender := &recordingTextSender{}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Duration: "0", DurationSet: true})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Duration: "0", DurationSet: true}, textSendOptions{})
 	if err == nil || !strings.Contains(err.Error(), "positive duration") {
 		t.Fatalf("sendTextMessageWithSender error = %v", err)
 	}
@@ -952,7 +976,7 @@ func TestSendTextMessageAppliesEphemeralDuration(t *testing.T) {
 	chat := types.JID{User: "15551234567", Server: types.DefaultUserServer}
 	sender := &recordingTextSender{}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true, Duration: "7d"})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true, Duration: "7d"}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -977,7 +1001,7 @@ func TestSendTextMessagePreservesExtendedTextWithEphemeralExpiration(t *testing.
 	preview := &linkpreview.Preview{URL: "https://example.com", Title: "Example"}
 	sender := &recordingTextSender{}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello https://example.com", "", "", preview, nil, textEphemeralOptions{Enabled: true, Duration: "7d"})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello https://example.com", "", "", preview, nil, textEphemeralOptions{Enabled: true, Duration: "7d"}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -1011,7 +1035,7 @@ func TestSendTextMessageUsesGroupEphemeralTimer(t *testing.T) {
 		},
 	}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -1029,7 +1053,7 @@ func TestSendTextMessageUsesDefaultEphemeralExpirationWhenGroupTimerUnavailable(
 	chat := types.JID{User: "12345", Server: types.GroupServer}
 	sender := &recordingTextSender{}
 
-	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true})
+	_, err := sendTextMessageWithSender(context.Background(), sender, db, chat, "hello", "", "", nil, nil, textEphemeralOptions{Enabled: true}, textSendOptions{})
 	if err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
@@ -1075,7 +1099,7 @@ func TestBuildTextMessageCombinesReplyAndMentions(t *testing.T) {
 		t.Fatalf("UpsertMessage: %v", err)
 	}
 
-	msg, plain, err := buildTextMessage(db, chat, "replying @15551234567", "quoted", "+15557654321", nil, []string{"15551234567@s.whatsapp.net"})
+	msg, plain, err := buildTextMessageWithSelf(db, chat, types.EmptyJID, "replying @15551234567", "quoted", "+15557654321", "", nil, []string{"15551234567@s.whatsapp.net"})
 	if err != nil {
 		t.Fatalf("buildTextMessage: %v", err)
 	}
@@ -1107,7 +1131,7 @@ func TestBuildTextMessageAttachesLinkPreview(t *testing.T) {
 		Thumbnail:   []byte("jpeg"),
 	}
 
-	msg, plain, err := buildTextMessage(db, chat, "see https://example.com/post", "", "", preview, nil)
+	msg, plain, err := buildTextMessageWithSelf(db, chat, types.EmptyJID, "see https://example.com/post", "", "", "", preview, nil)
 	if err != nil {
 		t.Fatalf("buildTextMessage: %v", err)
 	}
@@ -1208,7 +1232,7 @@ func TestSendTextReplyToOwnMessageUnderChatAliasUsesLIDParticipant(t *testing.T)
 		lidToPN:   pn,
 	}
 
-	if _, err := sendTextMessageWithSender(context.Background(), sender, db, lid, "reply", "quoted", "", nil, nil, textEphemeralOptions{}); err != nil {
+	if _, err := sendTextMessageWithSender(context.Background(), sender, db, lid, "reply", "quoted", "", nil, nil, textEphemeralOptions{}, textSendOptions{}); err != nil {
 		t.Fatalf("sendTextMessageWithSender: %v", err)
 	}
 

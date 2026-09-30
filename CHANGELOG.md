@@ -2,28 +2,102 @@
 
 ## Unreleased
 
-### Added
+- Messages: add `messages wait` to block until matching messages are stored, anchored by `--after-id` (local arrival order) or `--after` (inclusive second), and match `messages list --sender` against a sender's phone and LID forms.
 
-- Groups: add a read-only `groups participants list` command for local roster snapshots and refresh those snapshots with `sync --refresh-groups`.
-- Verification: add a reusable live text → interactive selection → reply driver with latency evidence.
+- Contacts: report a contact's session-known `lid` in `contacts show`.
 
-### Fixed
+- Groups: delegate `groups create` and `groups leave` to a running same-store `sync --follow`.
+
+- Sync: add `--follow --json` NDJSON events on stdout, `--mock` follow mode, and `sync inject` for offline testing; mock mode simulates delegated `send file` and refuses unsupported delegated operations instead of crashing.
+
+- Send: reuse cached PN-to-LID mappings before live registration lookup to avoid repeated warmup delays for known recipients.
+
+- Verification: add a reusable live text → interactive selection → reply driver with latency evidence, and fix the local CI gate for pnpm 12.
+
+- Dependencies: update gRPC tooling dependencies and pnpm to eligible minor releases while retaining the Go/Node minimums and 48-hour package cooldown.
+
+- Sync: enable bounded primary-device rerequests for eligible decryption failures and report unreadable messages with accurate recovery caveats. Thanks @zarmat99 (#441).
+
+- Sync: recover collections that require explicitly empty app-state keys while preserving ordinary key delivery and one-shot chat-state writes. Thanks @jzmudzinski (#443).
+
+- Sync: apply this account’s ordinary read receipts to local unread state so chats read on the phone are reflected locally with read receipts enabled. Thanks @zarmat99 (#439).
+
+- Sync: reuse group information and participant snapshots instead of requesting them twice per message; invalidate on group changes and reconnects, and retry failed snapshot writes. Thanks @zarmat99 (#447).
+
+- Store: avoid scanning the full search index on open and sorting entire phone/LID histories for limited message reads. Thanks @zarmat99 (#455).
+
+- Tests: compile store tests on Windows and isolate account tests from the real Windows home directory; keep both regressions in the normal gate. Thanks @parth-garg01 (#452, #448, #449).
+
+- History: retry unanswered one-to-one backfill with the chat’s verified alternate phone/LID identity and reuse the identity that responds. Thanks @tsavo-at-pieces (#457, #444).
+
+- Sync: enforce caller deadlines for queued delegated operations even without send spacing, and warn against retrying ambiguous timeouts. Thanks @tsavo-at-pieces (#456, #446).
+
+## 0.19.0 - 2026-09-24
+
+**Highlights:** opt-in read receipts without app-state recovery, accurate unread counts, and stable chat activity order.
+
+- Chats: add opt-in `mark-read --receipts` through an independent network path, with bounded batches, safe unread boundaries, sync delegation, and privacy-aware outcome reporting. Thanks @zarmat99 and @Adi-A (#432, #433).
+- Sync: preserve messages beyond replayed read boundaries, keep read counts monotonic, resolve same-second boundaries by message ID, and exclude system events, reactions, and revocations from new unread counts. Thanks @zarmat99 (#435).
+- Sync: keep content-free system events out of chat activity order and rebuild matching existing activity timestamps from stored content. Thanks @zarmat99 (#436).
+
+## 0.18.3 - 2026-09-21
+
+**Highlights:** webhooks omit media keys, backfill follows verified phone/LID identities, and sync recovery survives interruptions.
+
+- Security: omit attachment decryption keys and retrieval fields from media webhooks while preserving descriptive metadata and local downloads. (#417 - thanks @hchittanuru3)
+- History and contacts: resolve verified phone/LID pairs for backfill requests and contact lookup, preserve alias/tag edits through either identity, and keep opaque LIDs out of phone fields. (#427 - thanks @ugoi)
+- History: wait for response persistence before checking backfill progress, preventing an asynchronous reply from stopping a multi-batch backfill early.
+- Sync: decrypt encrypted message edits in live/history sync and bind updates to the authenticated sender, chat, and target. (#362, #363 - thanks @goutamadwant)
+- Sync: repair LTHash mismatches with a durable full refresh before bounded phone recovery, and replay interrupted recovery at startup. (#367, #382 - thanks @shishiv)
+- Messages: index associated-child and group-status-mention content and group-invite captions during live/history sync. (#365 - thanks @natea)
+- Auth: retain observed session revocation in auth/doctor diagnostics until confirmed login, and wait for login confirmation before reporting a successful diagnostic connection. (#389 - thanks @0xble)
+- CLI: keep libsignal diagnostics off stdout, preserve warnings and errors safely on stderr, and emit them as NDJSON warnings with `--events` without exposing raw cryptographic payloads. (#418, #419 - thanks @shishiv)
+- Store: return failure when bulk chat/group cleanup cannot delete selected rows, preserving successful deletions and reporting the underlying errors instead of emitting a successful JSON result.
+- Session: close the WhatsApp SQLite container on permanent shutdown and initialization failure, while keeping temporary reconnects usable and draining pending app-state persistence before closing either database.
+- Dependencies: refresh WhatsApp protocol handling, Go modules, pnpm, GoReleaser, and Docker images; keep the Go and Node source requirements unchanged.
+- Builds: share production/test dead-code checks between local and CI gates, validate documentation links in CI, isolate concurrent Windows lock cross-builds, and allow Go module maintenance while keeping CGO-disabled builds rejected.
+
+## 0.18.2 - 2026-09-11
+
+**Highlights:** mark chats read or unread while continuous sync owns the store.
+
+- Chats: delegate `mark-read` and `mark-unread` through the same-store follow process, preserving read-only checks and command output; restart older daemons after upgrading. (#361, #380 - thanks @shishiv)
+- Dependencies: refresh whatsmeow, Go networking and database tooling, vulnerability and dead-code checkers, GoReleaser 2.18.1, and pnpm 12.4.0 while retaining the 48-hour package release-age window.
+- Builds: identify source builds as the upcoming 0.18.2 patch.
+
+## 0.18.1 - 2026-09-07
+
+**Highlights:** bounded memory use when generating waveforms for long voice notes.
+
+- Send: cap voice-note waveform decoding at 2 MiB (about 131 seconds), preserve full audio and duration, and omit partial waveforms when ffmpeg fails. (#402 - thanks @SebTardif)
+
+## 0.18.0 - 2026-09-07
+
+**Highlights:** faster, interruptible upgrades, offline group rosters, and explicit opt-in self-chat sends.
+
+- Sync: speed up historical identity repair with indexed lookups and selective search-index updates, and honor cancellation between identities during startup. (#395, #398 - thanks @amitav13)
+- Groups: add `groups participants list` for offline roster snapshots with roles and timestamps, and refresh participant snapshots with `sync --refresh-groups`. (#359, #381 - thanks @shishiv)
+- Send: add default-off `send text --allow-self` for direct and delegated self-chat attempts, retaining the default rejection and documenting acknowledgement-only delivery and daemon restart requirements. (#396 - thanks @frdteknikelektro)
+- Sync: expose server backlog preview and completion lifecycle events without changing webhook payloads; document that they do not classify individual deliveries or indicate a drained webhook queue. (#379 - thanks @hchittanuru3)
+- Builds: refresh pnpm to 12.3.4 with its verified integrity pin and identify source builds as the upcoming 0.18.0 minor.
+- Release: require the exact version in dated changelog headings before local release preparation. (#397 - thanks @vincentkoc)
+
+## 0.17.2 - 2026-09-05
+
+**Highlights:** more complete searchable message history, bounded backfill retries, and clearer guidance for commands used alongside continuous sync.
 
 - Messages: extract comment bodies and album summaries in live/history sync, preserving comment reply targets and matching quote metadata. (#383 - thanks @shishiv and @Entretoize)
-- Sync: keep `--follow --json` stdout valid NDJSON by routing libsignal errors to stderr.
-- Send: reuse cached PN-to-LID mappings before live registration lookup to avoid repeated warmup delays for known recipients.
-- CLI: keep successful JSON commands successful when a pipe reader closes early, including Unix stdout SIGPIPE and Windows closed-pipe errors. (#366 - thanks @SebTardif)
-- Groups: warn on stderr when `groups list` truncates matching results, including JSON output, and keep `--events` warnings machine-readable. (#360 - thanks @hchittanuru3)
-- Sync: update whatsmeow so incoming socket frames use the active connection context.
 - History: retry an unanswered backfill anchor once with the next local message, report both anchors, and keep retries bounded without deleting history or filtering message IDs. (#371 - thanks @Entretoize)
-- Messages: omit synthetic audio captions while preserving supplied text and the `[Audio]` display fallback; ordinary re-ingestion can correct legacy captions without migrating untouched rows. (#378 - thanks @hchittanuru3)
-
-### Chore
-
-- Builds: use Go 1.27.1 for development, CI, release verification, and Docker while retaining the Go 1.27.0 source minimum.
-
-- Dependencies: update whatsmeow, x/crypto, gqlparser, pnpm 11, and the Pages deployment action; keep Corepack bootstrap compatible with a verified integrity pin. (#384 - thanks @thedavidweng)
-- Dependencies: update Go modules, pnpm, CI actions, GoReleaser, and Docker images; require Go 1.27.0 and align local, CI, and release toolchain checks.
+- Sync: serialize message and receipt webhook timestamps as UTC, preserving their instants while replacing host-local offsets with the documented `Z` form. (#386, #388 - thanks @hchittanuru3)
+- Media: explain how `media download --read-only --output PATH` bypasses the store lock held by continuous sync. (#387 - thanks @hchittanuru3)
+- Messages: omit synthetic audio captions while preserving supplied text and the `[Audio]` display fallback; re-ingestion can correct legacy captions without migrating untouched rows. (#378 - thanks @hchittanuru3)
+- CLI: keep successful JSON commands successful when a pipe reader closes early, including Unix SIGPIPE and Windows closed-pipe errors. (#366 - thanks @SebTardif)
+- Groups: warn on stderr when `groups list` truncates matching results, including JSON output, and keep `--events` warnings machine-readable. (#360 - thanks @hchittanuru3)
+- Contacts: bound system-contact exports and their helper processes while preserving the existing 10 MiB file-import limit. (#376 - thanks @SebTardif)
+- Docs: render nested heading links and table-of-contents labels safely, preserving links and stable heading anchors. (#370 - thanks @vincentkoc)
+- WhatsApp compatibility: update socket-context handling, message identity parsing, group deletion handling, and disconnect event processing through whatsmeow updates.
+- Builds: use Go 1.27.1 for development, CI, release verification, and Docker while retaining the Go 1.27.0 source minimum; source builds now identify the upcoming 0.17.2 patch.
+- Dependencies: refresh Go modules, pnpm 12.3.1, CI actions, GoReleaser, and Docker images, retaining a verified package-manager integrity pin. (#384 - thanks @thedavidweng)
 
 ## v0.17.1 - 2026-08-14
 

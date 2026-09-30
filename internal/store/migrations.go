@@ -39,6 +39,53 @@ var schemaMigrations = []migration{
 	{version: 23, name: "app state recovery markers", up: migrateAppStateRecoveryMarkers},
 	{version: 24, name: "app state recovery intents", up: migrateAppStateRecoveryIntents},
 	{version: 25, name: "message locations", up: migrateMessageLocations},
+	{version: 26, name: "message identity indexes and selective fts updates", up: migrateMessageIdentityIndexes},
+	{version: 27, name: "repair placeholder chat activity", up: migratePlaceholderChatActivity},
+	{version: 28, name: "unavailable app state keys", up: migrateUnavailableAppStateKeys},
+}
+
+func migratePlaceholderChatActivity(d *DB) error {
+	for _, table := range []string{"chats", "messages"} {
+		exists, err := d.tableExists(table)
+		if err != nil || !exists {
+			return err
+		}
+	}
+	// Rebuild the derived activity index from local content when its newest row
+	// matches. Preserve snapshot activity strictly newer than local history.
+	_, err := d.sql.Exec(`
+		WITH activity AS (
+			SELECT chat_jid, MAX(ts) AS latest,
+				MAX(CASE WHEN COALESCE(display_text, '') != '(message)'
+					OR TRIM(COALESCE(text, '')) != ''
+					OR COALESCE(media_type, '') != ''
+					OR revoked != 0 OR deleted_for_me != 0
+					THEN ts END) AS content_ts
+			FROM messages GROUP BY chat_jid
+		)
+		UPDATE chats SET last_message_ts = activity.content_ts
+		FROM activity WHERE chats.jid = activity.chat_jid
+			AND chats.last_message_ts = activity.latest
+			AND chats.last_message_ts > COALESCE(activity.content_ts, 0)
+	`)
+	if err != nil {
+		return fmt.Errorf("repair placeholder chat activity: %w", err)
+	}
+	return nil
+}
+
+func migrateMessageIdentityIndexes(d *DB) error {
+	hasMessages, err := d.tableExists("messages")
+	if err != nil || !hasMessages {
+		return err
+	}
+	if _, err := d.sql.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_messages_sender_jid ON messages(sender_jid);
+		CREATE INDEX IF NOT EXISTS idx_messages_quoted_sender_jid ON messages(quoted_sender_jid);
+	`); err != nil {
+		return fmt.Errorf("create message identity indexes: %w", err)
+	}
+	return migrateMessagesFTS(d)
 }
 
 func migrateMessageLocations(d *DB) error {
@@ -355,6 +402,9 @@ func (d *DB) ensureCurrentSchema() error {
 	}
 	if err := migrateMessageLocations(d); err != nil {
 		return fmt.Errorf("ensure current message locations schema: %w", err)
+	}
+	if err := migrateUnavailableAppStateKeys(d); err != nil {
+		return fmt.Errorf("ensure unavailable app state keys: %w", err)
 	}
 	return nil
 }
@@ -800,7 +850,16 @@ func migrateMessagesFTS(d *DB) error {
 			DELETE FROM messages_fts WHERE rowid = old.rowid;
 		END;
 
-		CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+		CREATE TRIGGER messages_au AFTER UPDATE ON messages
+		WHEN old.rowid IS NOT new.rowid
+			OR old.deleted_at IS NOT new.deleted_at
+			OR old.text IS NOT new.text
+			OR old.media_caption IS NOT new.media_caption
+			OR old.filename IS NOT new.filename
+			OR old.chat_name IS NOT new.chat_name
+			OR old.sender_name IS NOT new.sender_name
+			OR old.display_text IS NOT new.display_text
+		BEGIN
 			DELETE FROM messages_fts WHERE rowid = old.rowid;
 			INSERT INTO messages_fts(rowid, text, media_caption, filename, chat_name, sender_name, display_text)
 			SELECT new.rowid, COALESCE(new.text,''), COALESCE(new.media_caption,''), COALESCE(new.filename,''), COALESCE(new.chat_name,''), COALESCE(new.sender_name,''), COALESCE(new.display_text,'')
@@ -912,4 +971,13 @@ func isSQLiteIdentifier(name string) bool {
 		return false
 	}
 	return true
+}
+
+func migrateUnavailableAppStateKeys(d *DB) error {
+	_, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS unavailable_app_state_keys (
+  account_jid TEXT NOT NULL,
+  key_id BLOB NOT NULL,
+  PRIMARY KEY(account_jid,key_id)
+ )`)
+	return err
 }

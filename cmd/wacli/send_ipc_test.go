@@ -90,6 +90,93 @@ func TestSendDelegateRequestPreservesEphemeralInJSON(t *testing.T) {
 	}
 }
 
+func TestSendDelegateRequestPreservesAllowSelfInJSON(t *testing.T) {
+	raw, err := json.Marshal(sendDelegateRequest{
+		Version:   sendDelegateVersion,
+		Kind:      "text",
+		AllowSelf: true,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"allow_self":true`) {
+		t.Fatalf("encoded request missing allow-self flag: %s", raw)
+	}
+
+	var got sendDelegateRequest
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !got.AllowSelf {
+		t.Fatalf("AllowSelf = false, want true")
+	}
+}
+
+func TestSendTextAllowSelfDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) {
+	skipPresenceDelegateSocketTestOnUnsupportedOS(t)
+	storeDir := shortPresenceDelegateStoreDir(t)
+	lk, err := lock.Acquire(storeDir)
+	if err != nil {
+		t.Fatalf("lock store: %v", err)
+	}
+	defer lk.Release()
+
+	server := startPresenceDelegateTestSocket(t, storeDir, func(req sendDelegateRequest) sendDelegateResponse {
+		return sendDelegateResponse{OK: true, Sent: true, To: "15551234567@s.whatsapp.net", ID: "self-id"}
+	})
+	defer server.stop()
+
+	stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		"--store", storeDir, "--json", "--timeout", "750ms",
+		"send", "text", "--to", "+15551234567", "--message", "self-test", "--allow-self",
+	})
+	if err != nil {
+		t.Fatalf("send text failed: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+
+	req := server.nextRequest(t)
+	if req.Version != sendDelegateVersion || req.Kind != "text" {
+		t.Fatalf("delegate version/kind = %d/%q", req.Version, req.Kind)
+	}
+	if !req.AllowSelf {
+		t.Fatalf("delegate AllowSelf = false, want true")
+	}
+	if req.To != "+15551234567" || req.Message != "self-test" {
+		t.Fatalf("delegate text request = %+v", req)
+	}
+	if strings.Contains(stderr, "store is locked") {
+		t.Fatalf("delegated command tried the direct store path: stderr=%q", stderr)
+	}
+	if !strings.Contains(stdout, `"sent":true`) || !strings.Contains(stdout, `"id":"self-id"`) {
+		t.Fatalf("stdout %q missing delegated success", stdout)
+	}
+}
+
+func TestSendTextAllowSelfPreservesOlderDelegateRejection(t *testing.T) {
+	skipPresenceDelegateSocketTestOnUnsupportedOS(t)
+	storeDir := shortPresenceDelegateStoreDir(t)
+	lk, err := lock.Acquire(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lk.Release()
+	server := startPresenceDelegateTestSocket(t, storeDir, func(req sendDelegateRequest) sendDelegateResponse {
+		// Older daemons ignore allow_self and retain their self-recipient guard.
+		return sendDelegateResponse{OK: false, Error: errSelfTextRecipient.Error()}
+	})
+	defer server.stop()
+	stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		"--store", storeDir, "--json", "--timeout", "2s",
+		"send", "text", "--to", "+15551234567", "--message", "self-test", "--allow-self",
+	})
+	if err == nil || !strings.Contains(stderr, errSelfTextRecipient.Error()) || strings.Contains(stdout, `"sent":true`) {
+		t.Fatalf("older delegate rejection: err=%v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !server.nextRequest(t).AllowSelf {
+		t.Fatal("opt-in did not reach the delegate")
+	}
+}
+
 func TestSendDelegateRequestPreservesReplyInJSON(t *testing.T) {
 	raw, err := json.Marshal(sendDelegateRequest{
 		Version:       sendDelegateVersion,
@@ -333,11 +420,20 @@ type delegatedMarkReadCall struct {
 }
 
 type fakeDelegatedMarkReadApp struct {
-	calls chan delegatedMarkReadCall
+	calls        chan delegatedMarkReadCall
+	receipts     int
+	receiptCalls chan types.JID
 }
 
 func (f *fakeDelegatedMarkReadApp) DB() *store.DB { return nil }
 func (f *fakeDelegatedMarkReadApp) IsMock() bool  { return false }
+
+func (f *fakeDelegatedMarkReadApp) MarkChatReadWithReceipts(_ context.Context, chat types.JID) (int, types.ReceiptType, error) {
+	if f.receiptCalls != nil {
+		f.receiptCalls <- chat
+	}
+	return f.receipts, types.ReceiptType("unknown"), nil
+}
 
 func (f *fakeDelegatedMarkReadApp) MarkChatRead(_ context.Context, chat types.JID, read bool) error {
 	f.calls <- delegatedMarkReadCall{chat: chat, read: read}
@@ -353,12 +449,20 @@ func TestChatsMarkReadDelegatesThroughProductionServerWhenStoreLocked(t *testing
 	}
 	defer lk.Release()
 
-	fake := &fakeDelegatedMarkReadApp{calls: make(chan delegatedMarkReadCall, 2)}
+	fake := &fakeDelegatedMarkReadApp{
+		calls:        make(chan delegatedMarkReadCall, 3),
+		receipts:     2,
+		receiptCalls: make(chan types.JID, 3),
+	}
 	stop, err := startSendDelegateServerForStore(context.Background(), storeDir, sendSpacing{}, func(ctx context.Context, req sendDelegateRequest) (sendDelegateResponse, error) {
 		if req.Version != sendDelegateVersion {
 			return sendDelegateResponse{}, fmt.Errorf("unexpected delegated version %d", req.Version)
 		}
-		if req.Kind != "mark_read" {
+		switch req.Kind {
+		case markReadKind:
+		case markReadReceiptsKind:
+			req.Receipts = true // as executeDelegatedSend does for this kind
+		default:
 			return sendDelegateResponse{}, fmt.Errorf("unexpected delegated kind %q", req.Kind)
 		}
 		return executeDelegatedMarkRead(ctx, fake, req)
@@ -383,34 +487,65 @@ func TestChatsMarkReadDelegatesThroughProductionServerWhenStoreLocked(t *testing
 	}
 
 	tests := []struct {
-		command string
-		read    bool
+		name     string
+		command  string
+		read     bool
+		receipts bool
 	}{
-		{command: "mark-read", read: true},
-		{command: "mark-unread", read: false},
+		{name: "mark-read", command: "mark-read", read: true},
+		{name: "mark-unread", command: "mark-unread", read: false},
+		{name: "mark-read receipts", command: "mark-read", read: true, receipts: true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
-			stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{
 				"--store", storeDir, "--json", "--timeout", "750ms",
 				"chats", tt.command, "--chat", "123@s.whatsapp.net",
-			})
+			}
+			if tt.receipts {
+				args = append(args, "--receipts")
+			}
+			stdout, stderr, err := runPresenceDelegateHelper(t, args)
 			if err != nil {
 				t.Fatalf("chats %s failed: %v stdout=%q stderr=%q", tt.command, err, stdout, stderr)
 			}
 
-			select {
-			case call := <-fake.calls:
-				if call.chat.String() != "123@s.whatsapp.net" || call.read != tt.read {
-					t.Fatalf("fake mark-read call = %+v, want chat 123@s.whatsapp.net read %t", call, tt.read)
+			if tt.receipts {
+				select {
+				case call := <-fake.calls:
+					t.Fatalf("receipt mode entered app state: %+v", call)
+				default:
 				}
-			case <-contextWithTestTimeout(t).Done():
-				t.Fatal("timed out waiting for delegated mark-read call")
+			} else {
+				select {
+				case call := <-fake.calls:
+					if call.chat.String() != "123@s.whatsapp.net" || call.read != tt.read {
+						t.Fatalf("fake mark-read call = %+v, want chat 123@s.whatsapp.net read %t", call, tt.read)
+					}
+				case <-contextWithTestTimeout(t).Done():
+					t.Fatal("timed out waiting for delegated mark-read call")
+				}
+			}
+			select {
+			case chat := <-fake.receiptCalls:
+				if !tt.receipts || chat.String() != "123@s.whatsapp.net" {
+					t.Fatalf("unexpected delegated receipts for %s", chat)
+				}
+			default:
+				if tt.receipts {
+					t.Fatal("delegated mark-read --receipts sent no receipts")
+				}
 			}
 			if strings.Contains(stderr, "store is locked") {
 				t.Fatalf("delegated command returned lock error: stderr=%q", stderr)
 			}
-			for _, want := range []string{`"ok":true`, `"action":"` + tt.command + `"`, `"chat":"123@s.whatsapp.net"`} {
+			wants := []string{`"ok":true`, `"action":"` + tt.command + `"`, `"chat":"123@s.whatsapp.net"`}
+			if tt.receipts {
+				wants = append(wants, `"receipts":2`, `"receipt":"unknown"`, `"sender_notified":null`)
+			} else if strings.Contains(stdout, `"receipts"`) {
+				t.Fatalf("stdout %q reports receipts that were not requested", stdout)
+			}
+			for _, want := range wants {
 				if !strings.Contains(stdout, want) {
 					t.Fatalf("stdout %q missing %s", stdout, want)
 				}
@@ -506,5 +641,150 @@ func TestParseMockDelegateRecipient(t *testing.T) {
 	}
 	if _, err := parseMockDelegateRecipient("not-a-phone"); err == nil {
 		t.Fatal("invalid recipient parsed successfully")
+	}
+}
+
+func TestMockDelegatedFileStoresCaptionedMediaFromMe(t *testing.T) {
+	storeDir := t.TempDir()
+	a, err := app.New(app.Options{StoreDir: storeDir})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	defer a.Close()
+	a.SetMock(true)
+	pdf := filepath.Join(storeDir, "fatura.pdf")
+	if err := os.WriteFile(pdf, []byte("%PDF-1.4\n%%EOF\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{
+		Version: sendDelegateVersion,
+		Kind:    "file",
+		To:      "120363000000000001@g.us",
+		File:    pdf,
+		Caption: "conta de luz",
+	})
+	if err != nil {
+		t.Fatalf("mock file: %v", err)
+	}
+	if !resp.OK || !resp.Sent || resp.File["media"] != "document" || resp.File["name"] != "fatura.pdf" {
+		t.Fatalf("response = %+v", resp)
+	}
+	msgs, err := a.DB().ListMessages(store.ListMessagesParams{ChatJID: "120363000000000001@g.us", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	m := msgs[0]
+	if m.MsgID != resp.ID || !m.FromMe || m.SenderJID != "" || m.MediaType != "document" || m.MediaCaption != "conta de luz" || m.Filename != "fatura.pdf" {
+		t.Fatalf("stored message = %+v", m)
+	}
+}
+
+func TestMockDelegatedSendRejectsKindsWithoutSimulation(t *testing.T) {
+	a, err := app.New(app.Options{StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	defer a.Close()
+	a.SetMock(true)
+
+	for _, kind := range []string{"react", "voice", "location", "presence"} {
+		_, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{Version: sendDelegateVersion, Kind: kind, To: "123@s.whatsapp.net"})
+		if err == nil || !strings.Contains(err.Error(), "sync --mock does not support delegated "+kind) {
+			t.Fatalf("%s: err = %v", kind, err)
+		}
+	}
+}
+
+func TestGroupsCreateDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) {
+	skipPresenceDelegateSocketTestOnUnsupportedOS(t)
+	storeDir := shortPresenceDelegateStoreDir(t)
+	lk, err := lock.Acquire(storeDir)
+	if err != nil {
+		t.Fatalf("lock store: %v", err)
+	}
+	defer lk.Release()
+
+	groupJID := types.NewJID("120363000000000009", types.GroupServer)
+	server := startPresenceDelegateTestSocket(t, storeDir, func(req sendDelegateRequest) sendDelegateResponse {
+		info := &types.GroupInfo{JID: groupJID}
+		info.GroupName.Name = "Casal"
+		return sendDelegateResponse{OK: true, Action: "group-create", Chat: groupJID.String(), Group: info}
+	})
+	defer server.stop()
+
+	stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		"--store", storeDir, "--json", "--timeout", "750ms",
+		"groups", "create", "--name", "Casal", "--user", "+15550002002", "--user", "15550002001",
+	})
+	if err != nil {
+		t.Fatalf("groups create failed: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+
+	req := server.nextRequest(t)
+	if req.Version != sendDelegateVersion || req.Kind != groupCreateKind || req.GroupCreate == nil {
+		t.Fatalf("delegate request = %+v", req)
+	}
+	if req.GroupCreate.Name != "Casal" || strings.Join(req.GroupCreate.Users, ",") != "+15550002002,15550002001" {
+		t.Fatalf("group create request = %+v", *req.GroupCreate)
+	}
+	var result struct {
+		Success bool
+		Data    types.GroupInfo
+	}
+	firstLine, _, _ := strings.Cut(stdout, "\n")
+	if err := json.Unmarshal([]byte(firstLine), &result); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if !result.Success || result.Data.JID != groupJID || result.Data.GroupName.Name != "Casal" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestGroupsLeaveDelegatesThroughSendSocketWhenStoreLocked(t *testing.T) {
+	skipPresenceDelegateSocketTestOnUnsupportedOS(t)
+	storeDir := shortPresenceDelegateStoreDir(t)
+	lk, err := lock.Acquire(storeDir)
+	if err != nil {
+		t.Fatalf("lock store: %v", err)
+	}
+	defer lk.Release()
+
+	server := startPresenceDelegateTestSocket(t, storeDir, func(req sendDelegateRequest) sendDelegateResponse {
+		return sendDelegateResponse{OK: true, Action: "group-leave", Chat: req.To}
+	})
+	defer server.stop()
+
+	stdout, stderr, err := runPresenceDelegateHelper(t, []string{
+		"--store", storeDir, "--json", "--timeout", "750ms",
+		"groups", "leave", "--jid", "120363000000000009@g.us",
+	})
+	if err != nil {
+		t.Fatalf("groups leave failed: %v stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	req := server.nextRequest(t)
+	if req.Kind != groupLeaveKind || req.To != "120363000000000009@g.us" {
+		t.Fatalf("delegate request = %+v", req)
+	}
+	if !strings.Contains(stdout, `"jid":"120363000000000009@g.us"`) || !strings.Contains(stdout, `"left":true`) {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestDelegatedGroupOperationsValidateBeforeWhatsApp(t *testing.T) {
+	a, err := app.New(app.Options{StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	defer a.Close()
+
+	if _, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{Version: sendDelegateVersion, Kind: groupCreateKind}); err == nil || !strings.Contains(err.Error(), "missing its group") {
+		t.Fatalf("create without payload: err = %v", err)
+	}
+	if _, err := executeDelegatedSend(context.Background(), a, sendDelegateRequest{Version: sendDelegateVersion, Kind: groupLeaveKind, To: "15550002001@s.whatsapp.net"}); err == nil {
+		t.Fatal("leave accepted a non-group JID")
 	}
 }
