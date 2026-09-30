@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Messages: add `messages wait` to block until matching messages are stored, anchored by `--after-id` (local arrival order) or `--after` (inclusive second), and match `messages list --sender` against a sender's phone and LID forms.
+
+- Contacts: report a contact's session-known `lid` in `contacts show`.
+
+- Groups: delegate `groups create` and `groups leave` to a running same-store `sync --follow`.
+
+- Sync: add `--follow --json` NDJSON events on stdout, `--mock` follow mode, and `sync inject` for offline testing; mock mode simulates delegated `send file` and refuses unsupported delegated operations instead of crashing.
+
+- Send: reuse cached PN-to-LID mappings before live registration lookup to avoid repeated warmup delays for known recipients.
+
+- Verification: add a reusable live text → interactive selection → reply driver with latency evidence, and fix the local CI gate for pnpm 12.
+
 - Dependencies: update gRPC tooling dependencies and pnpm to eligible minor releases while retaining the Go/Node minimums and 48-hour package cooldown.
 
 - Sync: enable bounded primary-device rerequests for eligible decryption failures and report unreadable messages with accurate recovery caveats. Thanks @zarmat99 (#441).
